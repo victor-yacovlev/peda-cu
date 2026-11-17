@@ -35,6 +35,30 @@ PEDA - Python Exploit Development Assistance for GDB
 
 Requires GDB built with Python 3 (>= 3.13). Python 2 is not supported.
 
+## Notes
+
+* The `find` alias overrides GDB's built-in `find` command (it maps to `peda
+  searchmem`). Use `searchmem` directly, or `pipe find ...`/`maintenance ...`
+  if you need the original GDB behavior.
+* RISC-V targets are supported: works with `gdb-multiarch` + `qemu-riscv64 -g
+  PORT` (`target remote :PORT`), including `vmmap`, `dumpargs` (RISC-V ABI,
+  a0-a7), branch-taken hints in `context` and register display. x86 remains
+  the primary target.
+
+## Tests
+
+Run before committing (Linux host):
+
+    tests/run_unit_tests.sh   # unit tests: lib/utils.py + gdb-embedded suite
+                              # against a live qemu-riscv64 target (67 tests)
+    tests/smoke_riscv.sh      # command-level smoke test under qemu (13 checks)
+    tests/smoke_x86.sh        # x86-64 regression (10 checks)
+
+The unit suite covers vmmap parsers (modern/legacy `info proc mappings`,
+local /proc fallback), word-boundary register substitution, RISC-V argument
+heuristics + DWARF fallback, and branch semantics including the signed vs
+unsigned (`blt`/`bltu`) boundary.
+
 ## Screenshot
 ![start](http://i.imgur.com/P1BF5mp.png)
 

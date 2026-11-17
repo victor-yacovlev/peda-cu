@@ -34,12 +34,26 @@ from utils import *
 import config
 from nasm import *
 
-REGISTERS: dict[int, list[str]] = {
-    8 : ["al", "ah", "bl", "bh", "cl", "ch", "dl", "dh"],
-    16: ["ax", "bx", "cx", "dx"],
-    32: ["eax", "ebx", "ecx", "edx", "esi", "edi", "ebp", "esp", "eip"],
-    64: ["rax", "rbx", "rcx", "rdx", "rsi", "rdi", "rbp", "rsp", "rip",
-         "r8", "r9", "r10", "r11", "r12", "r13", "r14", "r15"]
+REGISTERS: dict[str, dict[int, list[str]]] = {
+    # x86 register names indexed by size in bits
+    "x86": {
+        8 : ["al", "ah", "bl", "bh", "cl", "ch", "dl", "dh"],
+        16: ["ax", "bx", "cx", "dx"],
+        32: ["eax", "ebx", "ecx", "edx", "esi", "edi", "ebp", "esp", "eip"],
+        64: ["rax", "rbx", "rcx", "rdx", "rsi", "rdi", "rbp", "rsp", "rip",
+             "r8", "r9", "r10", "r11", "r12", "r13", "r14", "r15"]
+    },
+    # RISC-V ABI names (a.k.a. aliases accepted by GDB "info registers")
+    "riscv": {
+        32: ["zero", "ra", "sp", "gp", "tp", "t0", "t1", "t2",
+             "s0", "fp", "s1", "a0", "a1", "a2", "a3", "a4", "a5",
+             "a6", "a7", "s2", "s3", "s4", "s5", "s6", "s7", "s8",
+             "s9", "s10", "s11", "t3", "t4", "t5", "t6", "pc"],
+        64: ["zero", "ra", "sp", "gp", "tp", "t0", "t1", "t2",
+             "s0", "fp", "s1", "a0", "a1", "a2", "a3", "a4", "a5",
+             "a6", "a7", "s2", "s3", "s4", "s5", "s6", "s7", "s8",
+             "s9", "s10", "s11", "t3", "t4", "t5", "t6", "pc"]
+    }
 }
 
 ###########################################################################
@@ -126,10 +140,12 @@ class PEDA(object):
             - value of expression
         """
 
-        regs = sum(REGISTERS.values(), [])
+        # substitute register names with $reg, only as whole words:
+        # naive str.replace() corrupts expressions on RISC-V where ABI names
+        # (a0, t1, s10...) are valid hex substrings (e.g. "0x1a0b" contains "a0")
+        regs = sum(self.get_regnames().values(), [])
         for r in regs:
-            if "$"+r not in exp and "e"+r not in exp and "r"+r not in exp:
-                exp = exp.replace(r, "$%s" % r)
+            exp = re.sub(r"(?<![\w$])%s(?![\w])" % re.escape(r), "$%s" % r, exp)
 
         p = re.compile(r"(.*)\[(.*)\]") # DWORD PTR [esi+eax*1]
         matches = p.search(exp)
@@ -336,8 +352,18 @@ class PEDA(object):
         Returns:
             - True if target is remote (Bool)
         """
+        # preferred way: introspect the connection object (GDB >= 12 python API,
+        # works with qemu-user/gdbserver regardless of "info program" wording)
+        try:
+            conn = gdb.selected_inferior().connection
+            if conn is not None:
+                return isinstance(conn, gdb.RemoteTargetConnection)
+        except Exception:
+            pass
+
+        # fallback for older GDB: parse "info program" output
         out = self.execute_redirect("info program")
-        if out and "serial line" in out: # remote target
+        if out and ("serial line" in out or "remote debugging" in out.lower()): # remote target
             return True
 
         return False
@@ -427,14 +453,32 @@ class PEDA(object):
         """
         arch = "unknown"
         bits = 32
-        out = self.execute_redirect('maintenance info sections ?').splitlines()
-        for line in out:
+        out = self.execute_redirect('maintenance info sections ?')
+        for line in (out or "").splitlines():
             if "file type" in line:
                 arch = line.split()[-1][:-1]
                 break
         if "64" in arch:
             bits = 64
         return (arch, bits)
+
+    def _is_x86(self) -> bool:
+        """True if the debugged program is x86 (i386 / x86-64)"""
+        arch, _ = self.getarch()
+        return "i386" in arch or "x86-64" in arch or "80x86" in arch
+
+    def _is_riscv(self) -> bool:
+        """True if the debugged program is RISC-V (e.g. elf64-littleriscv)"""
+        arch, _ = self.getarch()
+        return "riscv" in arch
+
+    def get_regnames(self) -> dict[int, list[str]]:
+        """
+        Register name table of the debugged architecture, {bits: [names]}
+        """
+        if self._is_riscv():
+            return REGISTERS["riscv"]
+        return REGISTERS["x86"]
 
     def intsize(self) -> int:
         """
@@ -735,7 +779,11 @@ class PEDA(object):
         if len(args) == 1 and to_int(args[0]) != None:
             args += [to_hex(to_int(args[0]) + 32)]
 
-        self.execute("set disassembly-flavor intel")
+        # x86-only setting: GDB rejects it on other targets (e.g. riscv);
+        # done lazily here because at "source peda.py" time the file may not
+        # be loaded yet and getarch() cannot tell the architecture
+        if self._is_x86():
+            self.execute("set disassembly-flavor intel")
         out = self.execute_redirect("disassemble %s %s" % (modif, ",".join(args)))
         if not out:
             return None
@@ -985,6 +1033,78 @@ class PEDA(object):
 
         return args
 
+    def _get_function_args_riscv(self, code: str, argc: int | None = None) -> list[int]:
+        """
+        Guess the number of arguments passed to a function - RISC-V (a0-a7)
+        """
+        # just retrieve max 8 args
+        arg_order = ["a0", "a1", "a2", "a3", "a4", "a5", "a6", "a7"]
+        # instructions whose first operand is the written register;
+        # stores (sw/sd...) are excluded: their first operand is a source
+        writers = {"li", "mv", "lui", "auipc", "addi", "add", "sub", "neg",
+                   "and", "or", "xor", "sll", "srl", "sra", "slt", "sltu",
+                   "lw", "ld", "lb", "lbu", "lh", "lhu", "lwu",
+                   "c.li", "c.mv", "c.lui", "c.addi", "c.add", "c.sub",
+                   "c.and", "c.or", "c.xor", "c.slli", "c.srli", "c.srai",
+                   "c.andi", "c.lw", "c.ld", "c.lwsp", "c.ldsp"}
+
+        if argc is None:
+            argc = 0
+            written = set()
+            for line in code.splitlines():
+                # line format: "0x<addr> [<sym>]:<mnemonic><TAB><operands>"
+                m = re.search(r"0x[0-9a-f]+[^:]*:\s*(\S+)\s*(.*)", line)
+                if not m:
+                    continue
+                (mnemonic, operands) = m.groups()
+                if mnemonic not in writers:
+                    continue
+                dst = operands.split(",")[0].strip()
+                if dst in arg_order:
+                    written.add(dst)
+            # calling convention sets a0..aN contiguously: argc = highest index + 1
+            for (i, r) in enumerate(arg_order):
+                if r in written:
+                    argc = i + 1
+
+        argc = min(argc, 8)
+        if argc == 0:
+            return []
+
+        args = []
+        regs = self.getregs()
+        if regs is None:
+            return []
+        for i in range(argc):
+            r = arg_order[i]
+            if r not in regs:
+                break
+            args += [regs[r]]
+
+        return args
+
+    def _get_function_args_dwarf(self) -> list[int] | None:
+        """
+        Get the arguments of the current function from debug info ("info args").
+        Used on RISC-V where the gcc -O0 prologue shuffles the argument
+        registers before the post-prologue breakpoint is reached.
+
+        Returns:
+            - list of integer argument values, or None if unavailable
+        """
+        out = self.execute_redirect("info args")
+        if not out or "No symbol table info" in out:
+            return None
+        args = []
+        # GDB 16 prints one arg per line ("a = 1\nb = 2"), older versions
+        # used a single comma-separated line: handle both
+        for m in re.finditer(r"(?:^|,|\n)\s*(\w+)\s*=\s*([^,\n]+)", out):
+            value = to_int(m.group(2).strip())
+            if value is None:
+                return None # non-integer arg: let the caller fall back
+            args += [value]
+        return args if args else None
+
     def get_function_args(self, argc: int | None = None) -> list[int]:
         """
         Get the guessed arguments passed to a function when stopped at a call instruction
@@ -1003,20 +1123,39 @@ class PEDA(object):
 
         (arch, bits) = self.getarch()
         pc = self.getreg("pc")
+
+        # RISC-V, stopped at function entry (not at a call instruction):
+        # the gcc -O0 prologue rotates/spills a0-a5 to stack ("mv a6,a0;",
+        # "mv a0,a1;", ..., "sw a5,-N(s0)"), so current register values are
+        # shuffled. Prefer DWARF info (programs in the course are built -g),
+        # and keep the register heuristic for the no-debug-info case.
+        if "riscv" in arch and argc is None:
+            out = self.execute_redirect("x/i 0x%x" % pc)
+            opcode = out.split(":\t")[-1].split()[0] if out else ""
+            if opcode and "call" not in opcode and opcode not in ("jal", "jalr",
+                    "tail", "c.jal", "c.jalr", "c.tail"):
+                dw_args = self._get_function_args_dwarf()
+                if dw_args is not None:
+                    return dw_args
+
         prev_insts = self.prev_inst(pc, 12)
 
         code = ""
         if not prev_insts:
             return []
 
+        call_ops = ("call", "jal", "jalr", "tail", "c.jal", "c.jalr", "c.tail")
         for (addr, inst) in prev_insts[::-1]:
-            if "call" in inst.strip().split()[0]:
+            opcode = inst.strip().split()[0]
+            if "call" in opcode or (self._is_riscv() and opcode in call_ops):
                 break
             code = "0x%x:%s\n" % (addr, inst) + code
 
         if "i386" in arch:
             args = self._get_function_args_32(code, argc)
-        if "64" in arch:
+        elif "riscv" in arch:
+            args = self._get_function_args_riscv(code, argc)
+        elif "64" in arch:
             args = self._get_function_args_64(code, argc)
 
         return args
@@ -1206,6 +1345,32 @@ class PEDA(object):
 
         target = None
         inst = inst.strip()
+
+        if self._is_riscv():
+            # e.g. "=> 0x104cc <main+36>:\tbgt\ta5,a4,104ee <sum6>"
+            # (binutils separates mnemonic and operands with a TAB on riscv)
+            m = re.search(r":\s*(\S+)\s+(.*)", inst)
+            if not m:
+                return None
+            (mnemonic, operands) = m.groups()
+            parts = [p.strip() for p in operands.split(",")]
+            if not parts or not parts[-1]:
+                return None
+            if mnemonic in ("jalr", "jr", "c.jalr", "c.jr"):
+                # target is the source register: "jr ra" / "jalr rd, rs1, imm"
+                reg = parts[0] if len(parts) == 1 else parts[1]
+                return to_int(self.parse_and_eval(reg))
+            # otherwise the last operand is the target; strip "<symbol>"
+            # annotation (binutils prints riscv branch offsets as bare hex)
+            target = parts[-1].split()[0]
+            value = to_int(target)
+            if value is None:
+                try:
+                    value = int(target, 16)
+                except ValueError:
+                    value = self.parse_and_eval(target)
+            return to_int(value)
+
         opcode = inst.split(":\t")[-1].split()[0]
         # this regex includes x86_64 RIP relateive address reference
         p = re.compile(r".*?:\s*[^ ]*\s*(.* PTR ).*(0x[^ ]*)")
@@ -1226,6 +1391,78 @@ class PEDA(object):
 
         return to_int(target)
 
+    def _testjump_riscv(self, inst: str) -> int | None:
+        """
+        Test if a RISC-V jump/branch instruction is taken: no flags register,
+        the decision is made by comparing the register operands directly.
+
+        Args:
+            - inst: ASM instruction text (String)
+
+        Returns:
+            - target address if the branch is taken, None otherwise
+        """
+        uncond = {"j", "jal", "jalr", "jr", "tail", "c.j", "c.jal", "c.jalr",
+                  "c.jr", "c.tail"}
+        two_op = {"beq", "bne", "blt", "bge", "bltu", "bgeu"}
+        # opcode -> (signed_compare, comparator(a, b))
+        cond = {
+            "beq":   (False, lambda a, b: a == b),
+            "bne":   (False, lambda a, b: a != b),
+            "bltu":  (False, lambda a, b: a < b),
+            "bgeu":  (False, lambda a, b: a >= b),
+            "blt":   (True,  lambda a, b: a < b),
+            "bge":   (True,  lambda a, b: a >= b),
+            # single-register pseudo forms, compared against zero
+            "beqz":  (False, lambda a, b: a == b),
+            "bnez":  (False, lambda a, b: a != b),
+            "bltz":  (True,  lambda a, b: a < b),
+            "bgez":  (True,  lambda a, b: a >= b),
+            "bgtz":  (True,  lambda a, b: a > b),
+            "blez":  (True,  lambda a, b: a <= b),
+            "c.beqz": (False, lambda a, b: a == b),
+            "c.bnez": (False, lambda a, b: a != b),
+        }
+
+        m = re.search(r":\s*(\S+)\s*(.*)", inst.strip())
+        if not m:
+            return None
+        (opcode, operands) = m.groups()
+        parts = [p.strip() for p in operands.split(",")]
+        next_addr = self.eval_target(inst)
+
+        if opcode in uncond:
+            return next_addr if next_addr else 0
+
+        if opcode not in cond:
+            return None
+
+        def regvalue(name: str) -> int | None:
+            if name in ("zero", "x0"):
+                return 0
+            # GDB accepts fp as an alias of s0, normalize anyway
+            return self.getreg("s0" if name == "fp" else name)
+
+        if opcode in two_op and len(parts) >= 2:
+            v1 = regvalue(parts[0])
+            v2 = regvalue(parts[1])
+        else: # pseudo form with implicit zero operand
+            v1 = regvalue(parts[0]) if parts else None
+            v2 = 0
+
+        if v1 is None or v2 is None:
+            return None
+
+        (signed, cmpf) = cond[opcode]
+        if signed:
+            # "info registers" reports unsigned values: sign-extend them
+            (_, bits) = self.getarch()
+            signbit = 1 << (bits - 1)
+            v1 = v1 - (1 << bits) if v1 & signbit else v1
+            v2 = v2 - (1 << bits) if v2 & signbit else v2
+
+        return next_addr if cmpf(v1, v2) else None
+
     def testjump(self, inst: str | None = None) -> int | None:
         """
         Test if jump instruction is taken or not
@@ -1234,15 +1471,18 @@ class PEDA(object):
             - (status, address of target jumped instruction)
         """
 
-        flags = self.get_eflags()
-        if not flags:
-            return None
-
         if not inst:
             pc = self.getreg("pc")
             inst = self.execute_redirect("x/i 0x%x" % pc)
             if not inst:
                 return None
+
+        if self._is_riscv():
+            return self._testjump_riscv(inst)
+
+        flags = self.get_eflags()
+        if not flags:
+            return None
 
         opcode = inst.split(":\t")[-1].split()[0]
         next_addr = self.eval_target(inst)
@@ -1469,22 +1709,12 @@ class PEDA(object):
                     maps += [(start, end, perm, mapname)]
             return maps
 
-        def _get_allmaps_linux(pid: int, remote: bool = False) -> list[tuple[int, int, str, str]]:
+        def _parse_proc_maps_text(text: str) -> list[tuple[int, int, str, str]]:
+            """Parse the content of a /proc/<pid>/maps file"""
             maps = []
-            mpath = "/proc/%s/maps" % pid
             #00400000-0040b000 r-xp 00000000 08:02 538840  /path/to/file
-            pattern = re.compile("([0-9a-f]*)-([0-9a-f]*) ([rwxps-]*)(?: [^ ]*){3} *(.*)")
-
-            if remote: # remote target
-                tmp = tmpfile()
-                self.execute("remote get %s %s" % (mpath, tmp.name))
-                tmp.seek(0)
-                out = tmp.read()
-                tmp.close()
-            else: # local target
-                out = open(mpath).read()
-
-            matches = pattern.findall(out)
+            pattern = re.compile(r"([0-9a-f]*)-([0-9a-f]*) ([rwxps-]*)(?: [^ ]*){3} *(.*)")
+            matches = pattern.findall(text)
             if matches:
                 for (start, end, perm, mapname) in matches:
                     start = to_int("0x%s" % start)
@@ -1492,6 +1722,76 @@ class PEDA(object):
                     if mapname == "":
                         mapname = "mapped"
                     maps += [(start, end, perm, mapname)]
+            return maps
+
+        def _parse_info_proc_mappings(text: str) -> list[tuple[int, int, str, str]]:
+            """Parse the output of gdb "info proc mappings" (remote-friendly)
+
+            Handles both the modern format (GDB >= 9, with Perms/objfile columns):
+                Start Addr   End Addr   Size   Offset   Perms   objfile
+            and the legacy format without the Perms column.
+            """
+            maps = []
+            for line in text.splitlines():
+                toks = line.split()
+                if len(toks) < 2:
+                    continue
+                start = to_int(toks[0])
+                end = to_int(toks[1])
+                if start is None or end is None:
+                    continue
+                rest = toks[2:]
+                # skip numeric columns: size, offset
+                while rest and to_int(rest[0]) is not None:
+                    rest.pop(0)
+                perm = ""
+                if rest and re.fullmatch(r"[rwx-]{3,4}[sp]?", rest[0]):
+                    perm = rest.pop(0)
+                mapname = " ".join(rest)
+                if mapname == "":
+                    mapname = "mapped"
+                maps += [(start, end, perm, mapname)]
+            return maps
+
+        def _get_allmaps_linux(pid: int, remote: bool = False) -> list[tuple[int, int, str, str]]:
+            maps = []
+            mpath = "/proc/%s/maps" % pid
+
+            if remote: # remote target, cascade of sources
+                # 1) modern GDB (>= 9) can query the remote target itself;
+                #    works with qemu-user gdbstub (verified qemu 10 + gdb 16)
+                out = self.execute_redirect("info proc mappings")
+                if out:
+                    maps = _parse_info_proc_mappings(out)
+
+                # 2) vFile-based "remote get": works with a real gdbserver,
+                #    typically rejected by the qemu-user gdbstub
+                if not maps:
+                    try:
+                        tmp = tmpfile()
+                        self.execute("remote get %s %s" % (mpath, tmp.name))
+                        tmp.seek(0)
+                        out = tmp.read()
+                        tmp.close()
+                        maps = _parse_proc_maps_text(out)
+                    except Exception:
+                        pass
+
+                # 3) qemu-user fallback: it runs locally and guest addresses are
+                #    host addresses of the qemu process, while inferior pid ==
+                #    qemu host pid. Only trust this if the local pid is really qemu.
+                #    (no "os." usage here: get_vmmap shadows the os module below)
+                if not maps:
+                    try:
+                        with open("/proc/%s/cmdline" % pid, "rb") as f:
+                            cmdline = [c.decode("utf-8", "replace") for c in f.read().split(b"\0") if c]
+                        if any("qemu" in c.rsplit("/", 1)[-1] for c in cmdline):
+                            maps = _parse_proc_maps_text(open(mpath).read())
+                    except Exception:
+                        pass
+            else: # local target
+                maps = _parse_proc_maps_text(open(mpath).read())
+
             return maps
 
         result = []
@@ -2629,7 +2929,8 @@ class PEDA(object):
                         yield code
             else:
                 save = ops[pos]
-                for regs in REGISTERS.values():
+                # search_asm is NASM/x86-only: iterate the x86 register table
+                for regs in REGISTERS["x86"].values():
                     for reg in regs:
                         ops[pos] = save.replace("?", reg, 1)
                         for asmcode_reg in buildcode(code, pos, depth+1):
@@ -3936,7 +4237,12 @@ class PEDACmd(object):
         for e in entries:
             out = peda.execute_redirect("tbreak %s" % e)
             if out and "breakpoint" in out:
-                peda.execute("run %s" % ' '.join(arg))
+                if peda.is_target_remote():
+                    # "run" is not supported on a remote target (e.g. qemu -g):
+                    # the process is already stopped at its entry, just continue
+                    peda.execute("continue")
+                else:
+                    peda.execute("run %s" % " ".join(arg))
                 started = 1
                 break
 
@@ -3945,7 +4251,10 @@ class PEDACmd(object):
             if elf_entry:
                 out = peda.execute_redirect("tbreak *%s" % elf_entry)
 
-            peda.execute("run")
+            if peda.is_target_remote():
+                peda.execute("continue")
+            else:
+                peda.execute("run")
 
         return
 
@@ -4285,13 +4594,22 @@ class PEDACmd(object):
         if inst: # valid $PC
             text = ""
             opcode = inst.split(":\t")[-1].split()[0]
-            # stopped at function call
-            if "call" in opcode:
+            if peda._is_riscv():
+                # RISC-V: TAB-separated mnemonic, call/jump-like opcodes by name
+                is_call = opcode in ("call", "jal", "jalr", "c.jal", "c.jalr")
+                is_jump = (opcode[0] == "b" or opcode.startswith("c.b")
+                           or opcode in ("j", "jr", "c.j", "c.jr"))
+            else:
+                # stopped at function call
+                is_call = "call" in opcode
+                # stopped at jump
+                is_jump = "j" in opcode
+            if is_call:
                 text += peda.disassemble_around(pc, count)
                 msg(format_disasm_code(text, pc))
                 self.dumpargs()
             # stopped at jump
-            elif "j" in opcode:
+            elif is_jump:
                 jumpto = peda.testjump(inst)
                 if jumpto: # JUMP is taken
                     code = peda.disassemble_around(pc, count)
@@ -4801,6 +5119,10 @@ class PEDACmd(object):
 
         elif option is None: # display eflags
             flags = peda.get_eflags()
+            if flags is None:
+                (arch, _) = peda.getarch()
+                warning_msg("eflags is not supported on this architecture (no flags register on %s)" % arch)
+                return
             text = ""
             for (i, f) in enumerate(FLAGS):
                 if flags[f]:
@@ -4851,7 +5173,7 @@ class PEDACmd(object):
             # Register
             regs = peda.getregs(" ".join(arg[1:]))
             if regname is None:
-                for r in REGISTERS[bits]:
+                for r in peda.get_regnames().get(bits, []):
                     if r in regs:
                         text += get_reg_text(r, regs[r])
             else:
@@ -4859,7 +5181,8 @@ class PEDACmd(object):
                     text += get_reg_text(r, v)
             if text:
                 msg(text.strip())
-            if regname is None or "eflags" in regname:
+            # flags register only exists on x86
+            if ("i386" in arch or "x86" in arch) and (regname is None or "eflags" in regname):
                 self.eflags()
             return
 
@@ -6182,7 +6505,11 @@ peda.execute("set prompt \001%s\002" % red("\002gdb-peda$ \001")) # custom promp
 peda.execute("set height 0") # disable paging
 peda.execute("set history expansion on")
 peda.execute("set history save on") # enable history saving
-peda.execute("set disassembly-flavor intel")
+try:
+    if peda._is_x86(): # x86-only setting, GDB rejects it on riscv and friends
+        peda.execute("set disassembly-flavor intel")
+except Exception:
+    pass # no file loaded yet: flavor is set lazily by disassemble()
 peda.execute("set follow-fork-mode child")
 peda.execute("set backtrace past-main on")
 peda.execute("set step-mode on")

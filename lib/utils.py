@@ -162,8 +162,12 @@ class message(object):
             @functools.wraps(f)
             def wrapper(*args: Any, **kwargs: Any) -> None:
                 self.bufferize()
-                f(*args, **kwargs)
-                self.flush()
+                try:
+                    f(*args, **kwargs)
+                finally:
+                    # flush even if the command raised: otherwise the buffering
+                    # counter leaks and all subsequent peda output is swallowed
+                    self.flush()
             return wrapper
 
         # If we are still using stdio we need to change it.
