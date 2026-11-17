@@ -6,10 +6,6 @@
 #       License: see LICENSE file for details
 #
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
 import os
 from utils import *
 import config
@@ -18,11 +14,11 @@ class Nasm(object):
     """
     Wrapper class for assemble/disassemble using nasm/ndisassm
     """
-    def __init__(self):
+    def __init__(self) -> None:
         pass
 
     @staticmethod
-    def assemble(asmcode, mode=32):
+    def assemble(asmcode: str, mode: int = 32) -> bytes | None:
         """
         Assemble ASM instructions using NASM
             - asmcode: input ASM instructions, multiple instructions are separated by ";" (String)
@@ -56,7 +52,7 @@ class Nasm(object):
         return None
 
     @staticmethod
-    def disassemble(buf, mode=32):
+    def disassemble(buf: bytes, mode: int = 32) -> str:
         """
         Disassemble binary to ASM instructions using NASM
             - buf: input binary (raw bytes)
@@ -69,7 +65,7 @@ class Nasm(object):
         return out
 
     @staticmethod
-    def format_shellcode(buf, mode=32):
+    def format_shellcode(buf: bytes, mode: int = 32) -> str:
         """
         Format raw shellcode to ndisasm output display
             "\x6a\x01"  # 0x00000000:    push byte +0x1
@@ -77,12 +73,12 @@ class Nasm(object):
 
         TODO: understand syscall numbers, socket call
         """
-        def nasm2shellcode(asmcode):
+        def nasm2shellcode(asmcode: str) -> str:
             if not asmcode:
                 return ""
 
             shellcode = []
-            pattern = re.compile("([0-9A-F]{8})\s*([^\s]*)\s*(.*)")
+            pattern = re.compile(r"([0-9A-F]{8})\s*([^\s]*)\s*(.*)")
 
             matches = pattern.findall(asmcode)
             for line in asmcode.splitlines():

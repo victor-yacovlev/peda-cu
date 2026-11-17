@@ -15,7 +15,7 @@ writing custom interactive Python GDB commands.
 2. Requirements
     - PEDA 1.0 is only support Linux
     - GDB 7.x
-    - Python 2.6+
+    - Python 3.13+ (Python 2 is not supported)
     - Utilities: nasm, readelf, objdump
 
 3. Installation

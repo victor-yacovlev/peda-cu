@@ -6,10 +6,6 @@
 #       License: see LICENSE file for details
 #
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
 import tempfile
 import pprint
 import inspect
@@ -17,16 +13,14 @@ import sys
 import struct
 import string
 import re
-import itertools
 import functools
-from subprocess import *
-import config
+import subprocess
 import codecs
+from collections.abc import Callable, Iterator
+from io import StringIO
+from typing import IO, Any, Self
 
-import six
-from six import StringIO
-from six.moves import range
-from six.moves import input
+import config
 
 # http://wiki.python.org/moin/PythonDecoratorLibrary#Memoize
 # http://stackoverflow.com/questions/8856164/class-decorator-decorating-method-in-python
@@ -36,13 +30,13 @@ class memoized(object):
     If called later with the same arguments, the cached value is returned
     (not reevaluated).
     """
-    def __init__(self, func):
+    def __init__(self, func: Callable[..., Any]) -> None:
         self.func = func
         self.instance = None # bind with instance class of decorated method
-        self.cache = {}
+        self.cache: dict[tuple[Any, ...], Any] = {}
         self.__doc__ = inspect.getdoc(self.func)
 
-    def __call__(self, *args, **kwargs):
+    def __call__(self, *args: Any, **kwargs: Any) -> Any:
         try:
             return self.cache[(self.func, self.instance, args) + tuple(kwargs.items())]
         except KeyError:
@@ -60,11 +54,11 @@ class memoized(object):
             else:
                 return self.func(self.instance, *args, **kwargs)
 
-    def __repr__(self):
+    def __repr__(self) -> str:
         """Return the function's docstring."""
-        return self.__doc__
+        return self.__doc__ or self.func.__name__
 
-    def __get__(self, obj, objtype):
+    def __get__(self, obj: Any, objtype: Any) -> Self:
         """Support instance methods."""
         if obj is None:
             return self
@@ -72,14 +66,14 @@ class memoized(object):
             self.instance = obj
             return self
 
-    def _reset(self):
+    def _reset(self) -> None:
         """Reset the cache"""
         # Make list to prevent modifying dictionary while iterating
         for cached in list(self.cache.keys()):
             if cached[0] == self.func and cached[1] == self.instance:
                 del self.cache[cached]
 
-def reset_cache(module=None):
+def reset_cache(module: Any = None) -> bool:
     """
     Reset memoized caches of an instance/module
     """
@@ -98,13 +92,13 @@ def reset_cache(module=None):
 
     return True
 
-def tmpfile(pref="peda-", is_binary_file=False):
+def tmpfile(pref: str = "peda-", is_binary_file: bool = False) -> Any:
     """Create and return a temporary file with custom prefix"""
 
     mode = 'w+b' if is_binary_file else 'w+'
     return tempfile.NamedTemporaryFile(mode=mode, prefix=pref)
 
-def colorize(text, color=None, attrib=None):
+def colorize(text: str, color: str | None = None, attrib: str | None = None) -> str:
     """
     Colorize text using ansicolor
     ref: https://github.com/hellman/libcolors/blob/master/libcolors.py
@@ -131,23 +125,23 @@ def colorize(text, color=None, attrib=None):
         ccode += ";" + COLORS[color]
     return CPRE + ccode + "m" + text + CSUF
 
-def green(text, attrib=None):
+def green(text: str, attrib: str | None = None) -> str:
     """Wrapper for colorize(text, 'green')"""
     return colorize(text, "green", attrib)
 
-def red(text, attrib=None):
+def red(text: str, attrib: str | None = None) -> str:
     """Wrapper for colorize(text, 'red')"""
     return colorize(text, "red", attrib)
 
-def yellow(text, attrib=None):
+def yellow(text: str, attrib: str | None = None) -> str:
     """Wrapper for colorize(text, 'yellow')"""
     return colorize(text, "yellow", attrib)
 
-def blue(text, attrib=None):
+def blue(text: str, attrib: str | None = None) -> str:
     """Wrapper for colorize(text, 'blue')"""
     return colorize(text, "blue", attrib)
 
-def clearscreen():
+def clearscreen() -> None:
     """Clear terminal screen"""
     sys.stdout.write("\x1b[2J\x1b[H")
 
@@ -157,16 +151,16 @@ class message(object):
     It also suports buffering using bufferize() and flush().
     """
 
-    def __init__(self):
+    def __init__(self) -> None:
         self.out = sys.stdout
         self.buffering = 0
 
-    def bufferize(self, f=None):
+    def bufferize(self, f: Callable[..., Any] | None = None) -> Callable[..., Any] | None:
         """Activate message's bufferization, can also be used as a decorater."""
 
         if f != None:
             @functools.wraps(f)
-            def wrapper(*args, **kwargs):
+            def wrapper(*args: Any, **kwargs: Any) -> None:
                 self.bufferize()
                 f(*args, **kwargs)
                 self.flush()
@@ -177,7 +171,7 @@ class message(object):
             self.out = StringIO()
         self.buffering += 1
 
-    def flush(self):
+    def flush(self) -> None:
         if not self.buffering:
             raise ValueError("Tried to flush a message that is not bufferising.")
         self.buffering -= 1
@@ -188,11 +182,11 @@ class message(object):
             sys.stdout.write(self.out.getvalue())
             self.out = sys.stdout
 
-    def __call__(self, text, color=None, attrib=None, teefd=None):
+    def __call__(self, text: Any, color: str | None = None, attrib: str | None = None, teefd: Any = None) -> None:
         if not teefd:
             teefd = config.Option.get("_teefd")
 
-        if isinstance(text, six.string_types) and "\x00" not in text:
+        if isinstance(text, str) and "\x00" not in text:
             print(colorize(text, color, attrib), file=self.out)
             if teefd:
                 print(colorize(text, color, attrib), file=teefd)
@@ -203,19 +197,19 @@ class message(object):
 
 msg = message()
 
-def warning_msg(text):
+def warning_msg(text: Any) -> None:
     """Colorize warning message with prefix"""
     msg(colorize("Warning: " + str(text), "yellow"))
 
-def error_msg(text):
+def error_msg(text: Any) -> None:
     """Colorize error message with prefix"""
     msg(colorize("Error: " + str(text), "red"))
 
-def debug_msg(text, prefix="Debug"):
+def debug_msg(text: Any, prefix: str = "Debug") -> None:
     """Colorize debug message with prefix"""
     msg(colorize("%s: %s" % (prefix, str(text)), "cyan"))
 
-def trim(docstring):
+def trim(docstring: str | None) -> str:
     """
     Handle docstring indentation, ref: PEP257
     """
@@ -244,22 +238,22 @@ def trim(docstring):
     # Return a single string:
     return '\n'.join(trimmed)
 
-def pager(text, pagesize=None):
+def pager(text: str, pagesize: int | None = None) -> None:
     """
     Paging output, mimic external command less/more
     """
     if not pagesize:
-        pagesize = config.Option.get("pagesize")
+        pagesize = to_int(config.Option.get("pagesize"))
 
-    if pagesize <= 0:
+    if not pagesize or pagesize <= 0:
         msg(text)
         return
 
     i = 1
-    text = text.splitlines()
-    l = len(text)
+    lines = text.splitlines()
+    l = len(lines)
 
-    for line in text:
+    for line in lines:
         msg(line)
         if i % pagesize == 0:
             ans = input("--More--(%d/%d)" % (i, l))
@@ -269,7 +263,7 @@ def pager(text, pagesize=None):
 
     return
 
-def execute_external_command(command, cmd_input=None):
+def execute_external_command(command: str, cmd_input: bytes | None = None) -> str:
     """
     Execute external command and capture its output
 
@@ -280,22 +274,22 @@ def execute_external_command(command, cmd_input=None):
         - output of command (String)
     """
     result = ""
-    P = Popen([command], stdout=PIPE, stdin=PIPE, stderr=PIPE, shell=True)
+    P = subprocess.Popen([command], stdout=subprocess.PIPE, stdin=subprocess.PIPE, stderr=subprocess.PIPE, shell=True)
     (result, err) = P.communicate(cmd_input)
     if err and config.Option.get("debug") == "on":
         warning_msg(err)
 
     return decode_string_escape(result)
 
-def is_printable(text, printables=""):
+def is_printable(text: bytes | str, printables: str = "") -> bool:
     """
     Check if a string is printable
     """
-    if six.PY3 and isinstance(text, six.string_types):
-        text = six.b(text)
-    return set(text) - set(six.b(string.printable) + six.b(printables)) == set()
+    if isinstance(text, str):
+        text = text.encode('latin-1')
+    return set(text) - set(string.printable.encode('ascii') + printables.encode('ascii')) == set()
 
-def is_math_exp(str):
+def is_math_exp(str: str) -> bool:
     """
     Check if a string is a math exprssion
     """
@@ -304,7 +298,7 @@ def is_math_exp(str):
     exp = set(str.lower())
     return (exp & opers != set()) and (exp - charset == set())
 
-def normalize_argv(args, size=0):
+def normalize_argv(args: list[Any] | tuple[Any, ...], size: int = 0) -> list[Any]:
     """
     Normalize argv to list with predefined length
     """
@@ -321,13 +315,15 @@ def normalize_argv(args, size=0):
         args += [None]
     return args
 
-def to_hexstr(str_):
+def to_hexstr(str_: str | bytes) -> str:
     """
     Convert a binary string to hex escape format
     """
+    if isinstance(str_, str):
+        str_ = str_.encode('latin-1')
     return "".join(["\\x%02x" % ord(i) for i in bytes_iterator(str_)])
 
-def to_hex(num):
+def to_hex(num: int) -> str:
     """
     Convert a number to hex format
     """
@@ -336,7 +332,7 @@ def to_hex(num):
     else:
         return "0x%x" % num
 
-def to_address(num):
+def to_address(num: int) -> str:
     """
     Convert a number to address format in hex
     """
@@ -347,7 +343,7 @@ def to_address(num):
     else:
         return "0x%08x" % num
 
-def to_int(val):
+def to_int(val: Any) -> int | None:
     """
     Convert a string to int number
     """
@@ -356,18 +352,18 @@ def to_int(val):
     except:
         return None
 
-def str2hex(str):
+def str2hex(str: bytes) -> bytes:
     """
     Convert a string to hex encoded format
     """
     result = codecs.encode(str, 'hex')
     return result
 
-def hex2str(hexnum, intsize=4):
+def hex2str(hexnum: str | int, intsize: int = 4) -> bytes:
     """
     Convert a number in hex format to string
     """
-    if not isinstance(hexnum, six.string_types):
+    if not isinstance(hexnum, str):
         nbits = intsize * 8
         hexnum = "0x%x" % ((hexnum + (1 << nbits)) % (1 << nbits))
     s = hexnum[2:]
@@ -376,7 +372,7 @@ def hex2str(hexnum, intsize=4):
     result = codecs.decode(s, 'hex')[::-1]
     return result
 
-def int2hexstr(num, intsize=4):
+def int2hexstr(num: int, intsize: int = 4) -> bytes:
     """
     Convert a number to hexified string
     """
@@ -392,26 +388,28 @@ def int2hexstr(num, intsize=4):
             result = struct.pack("<L", num)
     return result
 
-def list2hexstr(intlist, intsize=4):
+def list2hexstr(intlist: list[Any], intsize: int = 4) -> bytes:
     """
-    Convert a list of number/string to hexified string
+    Convert a list of number/string to hexified string (bytes)
     """
-    result = ""
+    result = b""
     for value in intlist:
-        if isinstance(value, str):
+        if isinstance(value, bytes):
             result += value
+        elif isinstance(value, str):
+            result += value.encode('latin-1')
         else:
             result += int2hexstr(value, intsize)
     return result
 
-def str2intlist(data, intsize=4):
+def str2intlist(data: bytes | str, intsize: int = 4) -> list[int]:
     """
     Convert a string to list of int
     """
     result = []
-    data = decode_string_escape(data)[::-1]
+    data = decode_string_escape(data)[::-1].encode('latin-1')
     l = len(data)
-    data = ("\x00" * (intsize - l%intsize) + data) if l%intsize != 0 else data
+    data = (b"\x00" * (intsize - l%intsize) + data) if l%intsize != 0 else data
     for i in range(0, l, intsize):
         if intsize == 8:
             val = struct.unpack(">Q", data[i:i+intsize])[0]
@@ -421,29 +419,30 @@ def str2intlist(data, intsize=4):
     return result
 
 @memoized
-def check_badchars(data, chars=None):
+def check_badchars(data: str | int, chars: str | None = None) -> bool:
     """
     Check an address or a value if it contains badchars
     """
-    if to_int(data) is None:
-        to_search = data
+    val = to_int(data)
+    if val is None:
+        to_search = to_binary_string(str(data))
     else:
-        data = to_hex(to_int(data))[2:]
-        if len(data) % 2 != 0:
-            data = "0" + data
-        to_search = codecs.decode(data, 'hex')
+        hexstr = to_hex(val)[2:]
+        if len(hexstr) % 2 != 0:
+            hexstr = "0" + hexstr
+        to_search = codecs.decode(hexstr, 'hex')
 
     if not chars:
-        chars = config.Option.get("badchars")
+        chars = str(config.Option.get("badchars"))
 
     if chars:
-        for c in chars:
-            if c in to_search:
+        for c in decode_string_escape(chars):
+            if c.encode('latin-1') in to_search:
                 return True
     return False
 
 @memoized
-def format_address(addr, type):
+def format_address(addr: str, type: str) -> str:
     """Colorize an address"""
     colorcodes = {
         "data": "blue",
@@ -454,7 +453,7 @@ def format_address(addr, type):
     return colorize(addr, colorcodes[type])
 
 @memoized
-def format_reference_chain(chain):
+def format_reference_chain(chain: list[tuple[str, str, str]] | None) -> str:
     """
     Colorize a chain of references
     """
@@ -475,7 +474,7 @@ def format_reference_chain(chain):
             text += "(%s)" % vn
         else:
             if v != "0x0":
-                s = hex2str(v)
+                s = hex2str(v or "")
                 if is_printable(s, "\x00"):
                     text += "(%s)" % string_repr(s.split(b"\x00")[0])
     return text
@@ -487,7 +486,7 @@ VULN_FUNCTIONS = [
     "recv", "tmp", "temp"
 ]
 @memoized
-def format_disasm_code(code, nearby=None):
+def format_disasm_code(code: str, nearby: int | None = None) -> str:
     """
     Format output of disassemble command with colors to highlight:
         - dangerous functions (rats/flawfinder)
@@ -513,9 +512,8 @@ def format_disasm_code(code, nearby=None):
     if not code:
         return result
 
-    if to_int(nearby) is not None:
-        target = to_int(nearby)
-    else:
+    target = to_int(nearby)
+    if target is None:
         target = 0
 
     for line in code.splitlines():
@@ -523,7 +521,7 @@ def format_disasm_code(code, nearby=None):
             result += line + "\n"
         else:
             color = style = None
-            m = re.search(".*(0x[^ ]*).*:\s*([^ ]*)", line)
+            m = re.search(r".*(0x[^ ]*).*:\s*([^ ]*)", line)
             if not m: # failed to parse
                 result += line + "\n"
                 continue
@@ -540,10 +538,9 @@ def format_disasm_code(code, nearby=None):
                     break
 
             prefix = line.split(":\t")[0]
-            addr = re.search("(0x[^\s]*)", prefix)
-            if addr:
-                addr = to_int(addr.group(1))
-            else:
+            addr = re.search(r"(0x[^\s]*)", prefix)
+            addr = to_int(addr.group(1)) if addr else None
+            if addr is None:
                 addr = -1
             line = "\t" + line.split(":\t", 1)[-1]
             if addr < target:
@@ -562,7 +559,7 @@ def format_disasm_code(code, nearby=None):
 
     return result.rstrip()
 
-def cyclic_pattern_charset(charset_type=None):
+def cyclic_pattern_charset(charset_type: int | str | None = None) -> str:
     """
     Generate charset for cyclic pattern
 
@@ -589,7 +586,7 @@ def cyclic_pattern_charset(charset_type=None):
         charset[2] = "sn()" + charset[2]
 
     if charset_type == 2: # maximum type
-        charset += ['!"#$%&\()*+,-./:;<=>?@[]^_{|}~'] # string.punctuation
+        charset += ['!"#$%&()*+,-./:;<=>?@[]^_{|}~'] # string.punctuation
 
     mixed_charset = mixed = ''
     k = 0
@@ -602,7 +599,7 @@ def cyclic_pattern_charset(charset_type=None):
 
     return mixed_charset
 
-def de_bruijn(charset, n, maxlen):
+def de_bruijn(charset: str, n: int, maxlen: int) -> str:
     """
     Generate the De Bruijn Sequence up to `maxlen` characters for the charset `charset`
     and subsequences of length `n`.
@@ -611,7 +608,7 @@ def de_bruijn(charset, n, maxlen):
     k = len(charset)
     a = [0] * k * n
     sequence = []
-    def db(t, p):
+    def db(t: int, p: int) -> None:
         if len(sequence) == maxlen:
             return
 
@@ -631,7 +628,7 @@ def de_bruijn(charset, n, maxlen):
     return ''.join(sequence)
 
 @memoized
-def cyclic_pattern(size=None, start=None, charset_type=None):
+def cyclic_pattern(size: int | None = None, start: int | None = None, charset_type: int | None = None) -> bytes:
     """
     Generate a cyclic pattern
 
@@ -650,7 +647,7 @@ def cyclic_pattern(size=None, start=None, charset_type=None):
     if not charset:
         charset = cyclic_pattern_charset(charset)
     else:
-        charset = ''.join(set(charset))
+        charset = ''.join(set(str(charset)))
 
     if start is None:
         start = 0
@@ -664,7 +661,7 @@ def cyclic_pattern(size=None, start=None, charset_type=None):
     return pattern[start:size].encode('utf-8')
 
 @memoized
-def cyclic_pattern_offset(value):
+def cyclic_pattern_offset(value: str | int) -> int | None:
     """
     Search a value if it is a part of cyclic pattern
 
@@ -675,15 +672,16 @@ def cyclic_pattern_offset(value):
         - offset in pattern if found
     """
     pattern = cyclic_pattern()
-    if to_int(value) is None:
-        search = value.encode('utf-8')
+    val = to_int(value)
+    if val is None:
+        search = str(value).encode('utf-8')
     else:
-        search = hex2str(to_int(value))
+        search = hex2str(val)
 
     pos = pattern.find(search)
     return pos if pos != -1 else None
 
-def cyclic_pattern_search(buf):
+def cyclic_pattern_search(buf: bytes) -> list[tuple[int, int, int]]:
     """
     Search all cyclic pattern pieces in a buffer
 
@@ -713,141 +711,39 @@ def cyclic_pattern_search(buf):
     return result
 
 
-def _decode_string_escape_py2(str_):
-    """
-    Python2 string escape
-
-    Do not use directly, instead use decode_string.
-    """
-    return str_.decode('string_escape')
-
-
-def _decode_string_escape_py3(str_):
-    """
-    Python3 string escape
-
-    Do not use directly, instead use decode_string.
-    """
-
+def decode_string_escape(str_: bytes | str) -> str:
+    """Decode escape sequences in a string, e.g. "\\n" -> newline (bytes input returns str)"""
     # Based on: http://stackoverflow.com/a/4020824
     return codecs.decode(str_, "unicode_escape")
 
 
-def decode_string_escape(str_):
-    """Generic Python string escape"""
-    raise Exception('Should be overriden')
-
-
-def bytes_iterator(bytes_):
+def bytes_iterator(bytes_: bytes) -> Iterator[bytes]:
     """
-    Returns iterator over a bytestring. In Python 2, this is just a str. In
-    Python 3, this is a bytes.
-
-    Wrap this around a bytestring when you need to iterate to be compatible
-    with Python 2 and Python 3.
-    """
-    raise Exception('Should be overriden')
-
-
-def _bytes_iterator_py2(bytes_):
-    """
-    Returns iterator over a bytestring in Python 2.
-
-    Do not call directly, use bytes_iterator instead
-    """
-    for b in bytes_:
-        yield b
-
-
-def _bytes_iterator_py3(bytes_):
-    """
-    Returns iterator over a bytestring in Python 3.
-
-    Do not call directly, use bytes_iterator instead
+    Iterate over a bytes object, yielding 1-byte bytes objects
+    (in contrast to iterating bytes directly, which yields ints).
     """
     for b in bytes_:
         yield bytes([b])
 
 
-def bytes_chr(i):
-    """
-    Returns a byte string  of length 1 whose ordinal value is i. In Python 2,
-    this is just a str. In Python 3, this is a bytes.
-
-    Use this instead of chr to be compatible with Python 2 and Python 3.
-    """
-    raise Exception('Should be overriden')
-
-
-def _bytes_chr_py2(i):
-    """
-    Returns a byte string  of length 1 whose ordinal value is i in Python 2.
-
-    Do not call directly, use bytes_chr instead.
-    """
-    return chr(i)
-
-
-def _bytes_chr_py3(i):
-    """
-    Returns a byte string  of length 1 whose ordinal value is i in Python 3.
-
-    Do not call directly, use bytes_chr instead.
-    """
+def bytes_chr(i: int) -> bytes:
+    """Returns a byte string of length 1 whose ordinal value is i"""
     return bytes([i])
 
 
-def to_binary_string(text):
+def to_binary_string(text: bytes | str) -> bytes:
     """
-    Converts a string to a binary string if it is not already one. Returns a str
-    in Python 2 and a bytes in Python3.
-
-    Use this instead of six.b when the text may already be a binary type
+    Converts a str to bytes (latin-1) if it is not already a bytes object.
     """
-    raise Exception('Should be overriden')
-
-
-def _to_binary_string_py2(text):
-    """
-    Converts a string to a binary string if it is not already one. Returns a str
-    in Python 2 and a bytes in Python3.
-
-    Do not use directly, use to_binary_string instead.
-    """
-    return str(text)
-
-
-def _to_binary_string_py3(text):
-    """
-    Converts a string to a binary string if it is not already one. Returns a str
-    in Python 2 and a bytes in Python3.
-
-    Do not use directly, use to_binary_string instead.
-    """
-    if isinstance(text, six.binary_type):
+    if isinstance(text, bytes):
         return text
-    elif isinstance(text, six.string_types):
-        return six.b(text)
+    elif isinstance(text, str):
+        return text.encode('latin-1')
     else:
         raise Exception('only takes string types')
 
 
-# Select functions based on Python version
-if six.PY2:
-    decode_string_escape = _decode_string_escape_py2
-    bytes_iterator = _bytes_iterator_py2
-    bytes_chr = _bytes_chr_py2
-    to_binary_string = _to_binary_string_py2
-elif six.PY3:
-    decode_string_escape = _decode_string_escape_py3
-    bytes_iterator = _bytes_iterator_py3
-    bytes_chr = _bytes_chr_py3
-    to_binary_string = _to_binary_string_py3
-else:
-    raise Exception("Could not identify Python major version")
-
-
-def dbg_print_vars(*args):
+def dbg_print_vars(*args: Any) -> None:
     """Prints name and repr of each arg on a separate line"""
     import inspect
     parent_locals = inspect.currentframe().f_back.f_locals
@@ -860,14 +756,13 @@ def dbg_print_vars(*args):
     print('\n'.join(name + '=' + value for name, value in maps))
 
 
-def string_repr(text, show_quotes=True):
+def string_repr(text: Any, show_quotes: bool = True) -> str:
     """
-    Prints the repr of a string. Eliminates the leading 'b' in the repr in
-    Python 3.
+    Prints the repr of a string. Eliminates the leading 'b' for bytes input.
 
     Optionally can show or include quotes.
     """
-    if six.PY3 and isinstance(text, six.binary_type):
+    if isinstance(text, (bytes, bytearray)):
         # Skip leading 'b' at the beginning of repr
         output = repr(text)[1:]
     else:

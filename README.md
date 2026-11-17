@@ -33,6 +33,8 @@ PEDA - Python Exploit Development Assistance for GDB
     echo "source ~/peda/peda.py" >> ~/.gdbinit
     echo "DONE! debug your program with gdb and enjoy"
 
+Requires GDB built with Python 3 (>= 3.13). Python 2 is not supported.
+
 ## Screenshot
 ![start](http://i.imgur.com/P1BF5mp.png)
 
