@@ -1,0 +1,18 @@
+{
+    "pythonVersion": "3.13",
+    "extraPaths": ["lib"],
+    "stubPath": "typings",
+    "typeCheckingMode": "standard",
+    "reportMissingImportsSource": "none",
+    "reportAttributeAccessIssue": "warning",
+    "reportOptionalMemberAccess": "warning",
+    "reportOptionalSubscript": "warning",
+    "reportOptionalIndex": "warning",
+    "reportOptionalIterable": "warning",
+    "reportOptionalCall": "warning",
+    "reportOptionalOperand": "warning",
+    "reportOptionalContextManager": "warning",
+    "reportOperatorIssue": "warning",
+    "reportAugmentedAssignIssue": "warning",
+    "reportPossiblyUnbound": "warning"
+}
