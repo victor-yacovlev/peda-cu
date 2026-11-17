@@ -10,7 +10,7 @@ from io import StringIO
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "lib"))
 
-from utils import message, memoized, to_int, to_hex  # sys.path set above
+from utils import message, memoized, to_int, to_hex, cyclic_pattern, cyclic_pattern_offset, cyclic_pattern_search  # sys.path set above
 
 
 class TestToInt(unittest.TestCase):
@@ -134,6 +134,42 @@ class TestMessageBufferize(unittest.TestCase):
     def test_flush_without_bufferize_raises(self):
         m = message()
         self.assertRaises(ValueError, m.flush)
+
+
+class TestCyclicPattern(unittest.TestCase):
+    """Cyclic pattern helpers powering `pattern create/offset/search`
+    (used by students for offset detection on RISC-V/AArch64 targets).
+    """
+
+    def test_pattern_length_and_determinism(self):
+        pat = cyclic_pattern(64)
+        self.assertEqual(len(pat), 64)
+        self.assertEqual(pat, cyclic_pattern(64))
+
+    def test_pattern_start_offset(self):
+        # generating with start=N is a slice of the same sequence
+        self.assertEqual(cyclic_pattern(32, start=16), cyclic_pattern(48)[16:])
+
+    def test_pattern_offset_str_form(self):
+        pat = cyclic_pattern(200)
+        sub = pat[40:48].decode()
+        self.assertEqual(cyclic_pattern_offset(sub), 40)
+
+    def test_pattern_offset_int_form(self):
+        # a 32-bit little-endian register value loaded from the pattern
+        pat = cyclic_pattern(200)
+        sub4 = pat[40:44]
+        value = int.from_bytes(sub4, "little")
+        self.assertEqual(cyclic_pattern_offset(f"0x{value:x}"), 40)
+
+    def test_pattern_offset_not_found(self):
+        # "=" is not part of any pattern charset
+        self.assertIsNone(cyclic_pattern_offset("======"))
+
+    def test_pattern_search_locates_slice(self):
+        pat = cyclic_pattern(200)
+        buf = b"\x00\x01" + pat[20:44] + b"\xff"
+        self.assertEqual(cyclic_pattern_search(buf), [(2, 24, 20)])
 
 
 if __name__ == "__main__":

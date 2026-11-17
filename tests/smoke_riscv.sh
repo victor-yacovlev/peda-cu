@@ -10,6 +10,9 @@
 #   - dumpargs: RISC-V ABI (a0-a7) at function entry and at the call site
 #   - eflags: graceful degradation on a flags-less architecture
 #   - searchmem / checksec
+#   - xinfo / telescope / hexdump / distance / nearpc / pdisass / pattern
+#   - a second pass over a static-PIE binary (vmmap at runtime base,
+#     dumpargs and branch annotation under PIE)
 #
 # Usage: tests/smoke_riscv.sh   (from anywhere, paths are self-resolved)
 
@@ -83,6 +86,13 @@ gdb-multiarch -q "$WORK/test_static" \
     -ex 'echo \n==EFLAGS==\n' -ex 'eflags' \
     -ex 'echo \n==DUMPARGS-ENTRY==\n' \
     -ex 'break sum6' -ex 'continue' -ex 'dumpargs' \
+    -ex 'echo \n==XINFO==\n' -ex 'xinfo $pc' \
+    -ex 'echo \n==TELESCOPE==\n' -ex 'telescope 4' \
+    -ex 'echo \n==HEXDUMP==\n' -ex 'hexdump $sp 32' \
+    -ex 'echo \n==DISTANCE==\n' -ex 'distance $sp $pc' \
+    -ex 'echo \n==NEARPC==\n' -ex 'nearpc 4' \
+    -ex 'echo \n==PDISASS==\n' -ex 'pdisass main' \
+    -ex 'echo \n==PATTERN==\n' -ex 'pattern create 64' -ex 'pattern offset AA0AAFAA' \
     -ex 'echo \n==SEARCHMEM==\n' -ex 'searchmem "big" binary' \
     -ex 'echo \n==CHECKSEC==\n' -ex 'checksec' \
     -ex 'echo \n==BRANCH==\n' \
@@ -104,6 +114,45 @@ check "dumpargs: first arg is 1"            'arg\[0\]: 0x1'
 check "searchmem: finds big in binary"      "\('big'\)"
 check "checksec: runs on riscv ELF"         'NX[[:space:]]*:'
 check "branch: JUMP annotation rendered"    'JUMP is (NOT )?taken'
+check "xinfo: virtual memory mapping"       'Virtual memory mapping:'
+check "xinfo: perms of code mapping"        'Perm  : r-xp'
+check "telescope: stack refs rendered"      '[0-9]{4}\|.*--> 0x'
+check "hexdump: hex+ascii dump rendered"    ': [0-9a-f ]{40,}'
+check "distance: sp to pc computed"         'From 0x[0-9a-f]+ to 0x[0-9a-f]+: -?[0-9]+ bytes'
+check "nearpc: current position marked"     '=> 0x[0-9a-f]+ <'
+check "pdisass: main disassembled"          'Dump of assembler code for function main'
+check "pattern: create/offset roundtrip"    'AA0AAFAA found at offset: 40'
+
+# ------------------------------------------------------------ PIE pass ----
+# static-pie: same checks at a randomized runtime base (qemu loads
+# static-pie riscv binaries at 0x10000+)
+if riscv64-linux-gnu-gcc -static -pie -g -O0 "$SCRIPT_DIR/assets/test.c" -o "$WORK/test_pie"; then
+    PORT=$(python3 -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1]); s.close()')
+    qemu-riscv64 -g "$PORT" "$WORK/test_pie" &
+    QPID=$!
+    sleep 0.5
+
+    PIE_OUT="$WORK/gdb_pie.out"
+    gdb-multiarch -q "$WORK/test_pie" \
+        -ex 'set pagination off' -ex 'set confirm off' \
+        -ex "source $PEDA" \
+        -ex "target remote :$PORT" \
+        -ex 'echo \n==VMMAP==\n' -ex 'vmmap binary' \
+        -ex 'echo \n==DUMPARGS-ENTRY==\n' \
+        -ex 'break sum6' -ex 'continue' -ex 'dumpargs' \
+        -ex 'echo \n==XINFO==\n' -ex 'xinfo $pc' \
+        -ex 'echo \n==BRANCH==\n' \
+        -ex "source $WORK/setbp.py" -ex 'continue' -ex 'peda context code' \
+        -ex 'kill' > "$PIE_OUT" 2>&1
+    kill "$QPID" 2>/dev/null; QPID=""
+
+    check "pie: binary mapped at runtime base" 'r-xp.*/test_pie' "$PIE_OUT"
+    check "pie: dumpargs at entry under pie"   'arg\[5\]: 0x6' "$PIE_OUT"
+    check "pie: xinfo maps relocated pc"       'Virtual memory mapping:' "$PIE_OUT"
+    check "pie: branch annotation under pie"   'JUMP is (NOT )?taken' "$PIE_OUT"
+else
+    echo "SKIP: cannot build static-pie binary"
+fi
 
 echo
 if [ "$failures" -eq 0 ]; then

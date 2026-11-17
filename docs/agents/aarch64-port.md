@@ -97,11 +97,11 @@ vs/vc, hi/ls, ge/lt (N==V / N!=V), gt/le, al/nv. Плюс:
 ## Критерии готовности (все выполнены и зафиксированы тестами)
 
 - `vmmap` ≥ 3 строк под qemu; `vmmap binary`; `searchmem ... binary`;
-  `xinfo $pc` — `tests/smoke_aarch64.sh` (13 проверок).
+  `xinfo $pc` — `tests/smoke_aarch64.sh` (25 проверок, включая PIE-прогон).
 - `dumpargs` = 1..6 на call-site и на `break sum6` —
   `tests/test_peda_gdb_aarch64.py::CallFlowTests`.
 - `b.cond` по синтетическим NZCV, cbz-ширина w/x, tbz/tbnz, br/ret —
   `BranchSemanticsTests`; предсказание сверяется с реальным `stepi`
   (включая флип через `set $cpsr`).
-- Регресс: riscv (52) + x86 smoke не сломаны; aarch64-набор — 45 тестов
+- Регресс: riscv (95) + x86 smoke не сломаны; aarch64-набор — 95 тестов
   в `tests/run_unit_tests.sh` (этап 3, graceful skip без тулчейна).

@@ -53,11 +53,13 @@ Requires GDB built with Python 3 (>= 3.13). Python 2 is not supported.
 
 Run before committing (Linux host):
 
-    tests/run_unit_tests.sh   # unit tests: lib/utils.py + gdb-embedded suites
-                              # against live qemu-riscv64 (52 tests) and
-                              # qemu-aarch64 (45 tests) targets
-    tests/smoke_riscv.sh      # command-level smoke test under qemu (13 checks)
-    tests/smoke_aarch64.sh    # command-level smoke test under qemu (13 checks)
+    tests/run_unit_tests.sh   # unit tests: lib/utils.py (21) + gdb-embedded
+                              # suites against live qemu-riscv64 (95 tests)
+                              # and qemu-aarch64 (95 tests) targets
+    tests/smoke_riscv.sh      # command-level smoke test under qemu (25 checks,
+                              # incl. a static-PIE pass)
+    tests/smoke_aarch64.sh    # command-level smoke test under qemu (25 checks,
+                              # incl. a static-PIE pass)
     tests/smoke_x86.sh        # x86-64 regression (10 checks)
 
 The unit suites cover vmmap parsers (modern/legacy `info proc mappings`,
@@ -66,7 +68,12 @@ heuristics + DWARF fallback, and branch semantics including the signed vs
 unsigned (`blt`/`bltu`) boundary; the AArch64 suite covers the x0-x7 argument
 heuristics (with w-register name normalization), `b.cond` evaluation via
 synthetic CPSR flags, register-width-correct `cbz`/`tbz` and the
-DWARF fallback at function entry.
+DWARF fallback at function entry. Both suites also cover vmrange/permission
+checks, `searchmem` (literal/regex/little-endian hex), memory read/write
+roundtrips, disassembly helpers, `string_to_argv`, ELF helpers (`elfentry`/
+`elfheader`/`checksec`), snapshot roundtrips and `get_status`; the smoke
+scripts additionally exercise `xinfo`, `telescope`, `hexdump`, `distance`,
+`nearpc`, `pdisass`, `pattern create/offset` and a static-PIE binary pass.
 
 ## Screenshot
 ![start](http://i.imgur.com/P1BF5mp.png)

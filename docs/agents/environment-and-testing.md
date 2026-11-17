@@ -46,9 +46,9 @@ gdb-multiarch -q ./test_static \
 
 | Скрипт | Что делает | Объём |
 |---|---|---|
-| `tests/run_unit_tests.sh` | (1) standalone-тесты `lib/utils.py` обычным python3; (2) `tests/test_peda_gdb.py` — unittest внутри `gdb-multiarch -batch` под живым qemu-riscv64-таргетом; (3) `tests/test_peda_gdb_aarch64.py` — то же под qemu-aarch64 (graceful skip без тулчейна) | 15 + 52 + 45 тестов |
-| `tests/smoke_riscv.sh` | командный уровень: vmmap/context/eflags/dumpargs/searchmem/checksec/JUMP-аннотация | 13 проверок |
-| `tests/smoke_aarch64.sh` | то же для AArch64 (x-регистры, dumpargs x0-x7, b.cond-аннотация) | 13 проверок |
+| `tests/run_unit_tests.sh` | (1) standalone-тесты `lib/utils.py` обычным python3; (2) `tests/test_peda_gdb.py` — unittest внутри `gdb-multiarch -batch` под живым qemu-riscv64-таргетом; (3) `tests/test_peda_gdb_aarch64.py` — то же под qemu-aarch64 (graceful skip без тулчейна) | 21 + 95 + 95 тестов |
+| `tests/smoke_riscv.sh` | командный уровень: vmmap/context/eflags/dumpargs/searchmem/checksec/JUMP-аннотация + xinfo/telescope/hexdump/distance/nearpc/pdisass/pattern + отдельный прогон static-PIE бинарника | 25 проверок |
+| `tests/smoke_aarch64.sh` | то же для AArch64 (x-регистры, dumpargs x0-x7, b.cond-аннотация) | 25 проверок |
 | `tests/smoke_x86.sh` | x86-64 регресс: start/context/EFLAGS/intel-flavor/vmmap/dumpargs/checksec/pattern | 10 проверок |
 | `tests/regex_audit.py`, `tests/regex_functional.py` | аудит конверсии regex в r-строки | — |
 
@@ -67,21 +67,34 @@ gdb-multiarch -q ./test_static \
 - `CallFlowTests` идут **первыми**: они ведут живую прогонку (call-site →
   entry → ветвление); остальные тесты свободно пишут регистры, что исказило бы
   argc/argv живого прогона.
+- `SnapshotTests`/`StatusTests` идут **последними**: они восстанавливают/двигают
+  живое состояние (регистры, pc), на которое не должны опираться более ранние
+  проверки.
+- Тесты записи в память пишут **ниже `$sp`** (стек растёт вниз): область
+  выше начального sp занята argc/argv/envp/auxv — её порча даёт SIGSEGV
+  при последующем `continue`.
+- `tbreak` по **текущему** `$pc` не срабатывает (gdb не ре-триггерит bp на
+  месте) — `continue` доведёт программу до конца; ломать надо следующий
+  адрес (`next_inst`).
 - Полярность ветки `if (s > 10)` зависит от версии gcc (`bge` или `blt`) —
   тесты сверяют предсказание `testjump` с **реальным `stepi`**, а не с
   захардкоженным taken/not-taken.
 - Вывод `hook-stop` (peda context) интерливится с unittest-выводом — сводка
-  парсится построчно (`grep -E '^test_|^(OK|FAILED|Ran )'`).
+  парсится построчно (`grep -E '^test_|^(OK|FAILED|Ran )'`); команда с
+  colorized-выводом (telescope) требует ANSI-толерантные grep-паттерны.
 
 ## Ручные сценарии для проверки нестандартных случаев
 
-- **PIE:** собрать `test_pie`, проверить `vmmap` (базовая загрузка 0x10000 у
-  qemu для static-pie) и `dumpargs`.
+- **PIE:** базовый сценарий автоматизирован в `smoke_riscv.sh`/`smoke_aarch64.sh`
+  (static-pie прогон: vmmap по runtime-базе, dumpargs, JUMP-аннотация);
+  вручную остаётся проверить динамический PIE и нестандартные базы.
 - **Fallback vmmap №3:** в live-сессии патчнуть `execute_redirect` так, чтобы
   `"info proc mappings"` возвращал `None`, и `execute` чтобы `"remote get"`
-  возвращал `False` → `get_vmmap` должен прочитать локальный `/proc/<qemu_pid>/maps`.
+  возвращал `False` → `get_vmmap` должен прочитать локальный `/proc/<qemu_pid>/maps`
+  (автоматизировано в `VmmapParserTests::test_local_proc_fallback`).
 - **Знаковое/беззнаковое:** остановиться на ветвлении, `set $a4 = -1`,
-  сравнить аннотацию для `blt`/`bltu`-семантики.
+  сравнить аннотацию для `blt`/`bltu`-семантики
+  (автоматизировано в `BranchSemanticsTests`).
 
 ## Регламент изменений (из правил работы)
 

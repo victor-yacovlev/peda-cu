@@ -20,9 +20,9 @@
 3. Перед любыми изменениями — прогнать тесты (см. [environment-and-testing.md](environment-and-testing.md)):
 
 ```sh
-tests/run_unit_tests.sh    # 15 standalone + 52 riscv + 45 aarch64 gdb-embedded тестов
-tests/smoke_riscv.sh       # командный уровень под qemu (13 проверок)
-tests/smoke_aarch64.sh     # командный уровень под qemu (13 проверок)
+tests/run_unit_tests.sh    # 21 standalone + 95 riscv + 95 aarch64 gdb-embedded тестов
+tests/smoke_riscv.sh       # командный уровень под qemu (25 проверок, включая PIE-прогон)
+tests/smoke_aarch64.sh     # командный уровень под qemu (25 проверок, включая PIE-прогон)
 tests/smoke_x86.sh         # регресс x86-64 (10 проверок)
 ```
 

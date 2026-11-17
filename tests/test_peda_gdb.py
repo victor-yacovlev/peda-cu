@@ -23,6 +23,17 @@ Coverage:
     - live single-pass flow: args at the call site, args at function entry
       (gcc -O0 prologue shuffles registers -> DWARF), branch prediction
       consistency checked against real single-stepping
+    - vmrange/is_executable/is_writable/is_address (canned + live, plus the
+      empty-maps readability fallback)
+    - searchmem: literal / regex / little-endian hex value / bad-regex
+      fallback / swapped range, live searchmem_by_range
+    - memory r/w roundtrips below $sp (readmem/writemem/read_int/write_int)
+    - disassembly helpers: current_inst/next_inst/prev_inst/get_disasm/
+      disassemble_around
+    - string_to_argv: $register values, "+N" relative offsets, math exprs
+    - ELF helpers: elfentry/elfheader/checksec/getfile + static-binary gates
+    - snapshot roundtrip (registers + writable memory)
+    - get_status at a real breakpoint hit
 """
 
 import contextlib
@@ -108,6 +119,12 @@ CODE_SIX_ARGS = ("0x104fc:\tli\ta5,6\n"
 
 CODE_ONLY_STORES = ("0x1:\tsd\ta0,0(sp)\n"
                     "0x2:\tsw\ta3,4(s0)\n")
+
+FAKE_MAPS = [
+    (0x10000, 0x7a000, "r-xp", "/tmp/test_static"),
+    (0x7a000, 0x80000, "rw-p", "/tmp/test_static"),
+    (0x80000, 0x85000, "rw-p", "mapped"),
+]
 
 
 # --------------------------------------------------------------------------
@@ -469,6 +486,316 @@ class CallFlowTests(unittest.TestCase):
             self.assertEqual(actual, target)
 
 
+class VmrangePermTests(unittest.TestCase):
+    """get_vmrange / is_executable / is_writable / is_address.
+
+    Canned-map calls verify the lookup logic (list args also bypass
+    @memoized, so no cache interference); live calls verify the qemu vmmap.
+    """
+
+    def setUp(self):
+        reset_cache()  # is_executable/is_writable/is_address are memoized
+
+    def test_vmrange_found(self):
+        self.assertEqual(peda.get_vmrange(0x10500, FAKE_MAPS), FAKE_MAPS[0])
+        self.assertEqual(peda.get_vmrange(0x7b000, FAKE_MAPS), FAKE_MAPS[1])
+        self.assertEqual(peda.get_vmrange(0x84000, FAKE_MAPS), FAKE_MAPS[2])
+
+    def test_vmrange_end_is_exclusive(self):
+        # end of a range belongs to the NEXT mapping, not to this one
+        self.assertEqual(peda.get_vmrange(0x7a000, FAKE_MAPS), FAKE_MAPS[1])
+
+    def test_vmrange_miss(self):
+        self.assertIsNone(peda.get_vmrange(0x9000, FAKE_MAPS))
+        self.assertIsNone(peda.get_vmrange(0x100000, FAKE_MAPS))
+
+    def test_permission_checks(self):
+        self.assertTrue(peda.is_executable(0x10500, FAKE_MAPS))
+        self.assertFalse(peda.is_writable(0x10500, FAKE_MAPS))
+        self.assertTrue(peda.is_writable(0x7b000, FAKE_MAPS))
+        self.assertFalse(peda.is_executable(0x7b000, FAKE_MAPS))
+        # anonymous mapping is still a valid address
+        self.assertTrue(peda.is_address(0x84000, FAKE_MAPS))
+        self.assertFalse(peda.is_address(0x9000, FAKE_MAPS))
+
+    def test_live_pc_sp_permissions(self):
+        pc = peda.getreg("pc")
+        sp = peda.getreg("sp")
+        self.assertTrue(peda.is_executable(pc))
+        self.assertFalse(peda.is_writable(pc))
+        self.assertTrue(peda.is_writable(sp))
+        self.assertTrue(peda.is_address(sp))
+        self.assertFalse(peda.is_address(0x4141400000))
+
+    def test_empty_maps_readability_fallback(self):
+        """No mappings at all -> fall back to a 1-page read probe."""
+        orig = peda.get_vmmap
+        peda.get_vmmap = lambda *a, **k: []
+        try:
+            sp = peda.getreg("sp")
+            page = sp & ~0xFFF
+            self.assertEqual(peda.get_vmrange(sp), (page, page + 0x1000, "rwx", "unknown"))
+            self.assertIsNone(peda.get_vmrange(0x4141400000))
+        finally:
+            peda.get_vmmap = orig
+
+
+class SearchmemTests(unittest.TestCase):
+    """searchmem() core paths on canned memory + live searchmem_by_range."""
+
+    def test_literal_ascii(self):
+        found = peda.searchmem(0x1000, 0x1010, "big", mem=b"xxbigyybig")
+        self.assertEqual(found, [(0x1002, b"626967"), (0x1007, b"626967")])
+
+    def test_regex_pattern(self):
+        found = peda.searchmem(0x1000, 0x1010, b"[bB]i[gG]", mem=b"xxBigyybig")
+        self.assertEqual(found, [(0x1002, b"426967"), (0x1007, b"626967")])
+
+    def test_hex_value_search_is_little_endian(self):
+        # "0x1122" must match the byte sequence 22 11 in memory
+        found = peda.searchmem(0x2000, 0x2010, "0x1122", mem=b"\x22\x11\x00\x22\x11")
+        self.assertEqual(found, [(0x2000, b"2211"), (0x2003, b"2211")])
+
+    def test_invalid_regex_falls_back_to_literal(self):
+        found = peda.searchmem(0x1000, 0x1010, "a(b", mem=b"za(bz")
+        self.assertEqual(found, [(0x1001, b"612862")])
+
+    def test_swapped_range(self):
+        found = peda.searchmem(0x1010, 0x1000, "big", mem=b"big")
+        self.assertEqual(found, [(0x1000, b"626967")])
+
+    def test_empty_mem(self):
+        self.assertEqual(peda.searchmem(0x1000, 0x1010, "big", mem=b""), [])
+
+    def test_no_match(self):
+        self.assertEqual(peda.searchmem(0x1000, 0x1010, "zzz", mem=b"big"), [])
+
+    def test_live_searchmem_by_range(self):
+        found = peda.searchmem_by_range("binary", "big")
+        self.assertTrue(found)
+        maps = peda.get_vmmap("binary")
+        for (addr, hexval) in found:
+            self.assertTrue(any(start <= addr < end for (start, end, _, _) in maps))
+            self.assertEqual(bytes.fromhex(hexval.decode()), b"big")
+
+
+class MemAccessTests(unittest.TestCase):
+    """readmem/writemem/read_int/write_int roundtrips on scratch stack memory.
+
+    Uses addresses BELOW $sp (stack grows down): free scratch space that
+    does not disturb argc/argv/envp above the initial sp.
+    """
+
+    def setUp(self):
+        reset_cache()
+        self.scratch = (peda.getreg("sp") - 0x400) & ~0xF
+
+    def test_writemem_readmem_roundtrip(self):
+        self.assertEqual(peda.writemem(self.scratch, b"ABCD"), 4)
+        self.assertEqual(peda.readmem(self.scratch, 4), b"ABCD")
+        # binary-safe data
+        self.assertEqual(peda.writemem(self.scratch, b"\x00\xff\x10"), 3)
+        self.assertEqual(peda.readmem(self.scratch, 3), b"\x00\xff\x10")
+
+    def test_writemem_empty_buffer(self):
+        self.assertEqual(peda.writemem(self.scratch, b""), 0)
+
+    def test_write_int_roundtrip(self):
+        self.assertTrue(peda.write_int(self.scratch, 0x1122334455667788))
+        self.assertEqual(peda.read_int(self.scratch), 0x1122334455667788)
+
+    def test_write_int_negative(self):
+        self.assertTrue(peda.write_int(self.scratch, -1))
+        self.assertEqual(peda.read_int(self.scratch), 0xFFFFFFFFFFFFFFFF)
+
+    def test_read_int_forced_size(self):
+        self.assertEqual(peda.writemem(self.scratch, b"\x78\x56\x34\x12\x00\x00\x00\x00"), 8)
+        self.assertEqual(peda.read_int(self.scratch, 4), 0x12345678)
+        self.assertEqual(peda.read_int(self.scratch, 8), 0x12345678)
+
+    def test_write_long_roundtrip(self):
+        self.assertTrue(peda.write_long(self.scratch, 0xCAFEF00DBEEF))
+        self.assertEqual(peda.read_long(self.scratch), 0xCAFEF00DBEEF)
+
+    def test_intsize_is_64(self):
+        self.assertEqual(peda.intsize(), 8)
+
+
+class DisasmHelpersTests(unittest.TestCase):
+    """current_inst / next_inst / prev_inst / get_disasm / disassemble_around
+    against the live target (all are @memoized -> reset in setUp).
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        out = peda.execute_redirect("disassemble main")
+        m = re.search(r"0x([0-9a-f]+)\s+<[^>]*>:\s*\t(b\w*)\s", out)
+        assert m, "cannot locate the first branch in main"
+        cls.branch_addr = int(m.group(1), 16)
+
+    def setUp(self):
+        reset_cache()
+
+    def test_current_inst_at_branch(self):
+        (addr, code) = peda.current_inst(self.branch_addr)
+        self.assertEqual(addr, self.branch_addr)
+        # mnemonic is TAB-separated from operands on riscv
+        self.assertTrue(code.split()[0].startswith("b"), code)
+        self.assertIn("\t", code)
+
+    def test_current_inst_at_pc(self):
+        pc = peda.getreg("pc")
+        (addr, code) = peda.current_inst(pc)
+        self.assertEqual(addr, pc)
+        self.assertTrue(code.strip())
+
+    def test_next_inst(self):
+        pc = peda.getreg("pc")
+        insts = peda.next_inst(pc, 3)
+        self.assertEqual(len(insts), 3)
+        addrs = [i[0] for i in insts]
+        self.assertEqual(addrs, sorted(addrs))
+        for addr in addrs:
+            self.assertGreater(addr, pc)
+
+    def test_prev_inst_before_branch(self):
+        insts = peda.prev_inst(self.branch_addr, 2)
+        self.assertEqual(len(insts), 2)
+        addrs = [i[0] for i in insts]
+        self.assertEqual(addrs, sorted(addrs))
+        for addr in addrs:
+            self.assertLess(addr, self.branch_addr)
+        self.assertTrue(all(i[1].strip() for i in insts))
+
+    def test_get_disasm(self):
+        pc = peda.getreg("pc")
+        code = peda.get_disasm(pc, 2)
+        self.assertIn(f"0x{pc:x}", code)
+
+    def test_disassemble_around(self):
+        pc = peda.getreg("pc")
+        code = peda.disassemble_around(pc, 8)
+        self.assertTrue(code)
+        self.assertIn(f"0x{pc:x}", code)
+
+
+class StringToArgvTests(unittest.TestCase):
+    """string_to_argv: $register values, "+N" relative offsets, math."""
+
+    def test_register_value(self):
+        setreg("a0", 0x50)
+        self.assertEqual(peda.string_to_argv("$a0"), ["0x50"])
+
+    def test_relative_offset(self):
+        sp = peda.getreg("sp")
+        self.assertEqual(peda.string_to_argv("$sp +8"),
+                         [f"0x{sp:x}", f"0x{sp + 8:x}"])
+
+    def test_math_expression(self):
+        self.assertEqual(peda.string_to_argv("0x100+0x10"), ["0x110"])
+
+    def test_bytes_input(self):
+        self.assertEqual(peda.string_to_argv(b"foo bar"), ["foo", "bar"])
+
+    def test_plain_arguments_untouched(self):
+        self.assertEqual(peda.string_to_argv("vmmap binary"), ["vmmap", "binary"])
+
+
+class ElfInfoTests(unittest.TestCase):
+    """ELF helpers and checksec against the live static no-pie binary."""
+
+    def setUp(self):
+        reset_cache()  # elfheader/elfsymbols are memoized
+
+    def test_elfentry_inside_binary(self):
+        entry = peda.elfentry()
+        self.assertIsNotNone(entry)
+        maps = peda.get_vmmap("binary")
+        self.assertTrue(any(start <= entry < end and "x" in perm
+                           for (start, end, perm, _) in maps))
+
+    def test_elfheader_text_is_code(self):
+        headers = peda.elfheader(".text")
+        self.assertEqual(len(headers), 1)
+        (start, end, htype) = headers[".text"]
+        self.assertEqual(htype, "code")
+        self.assertLess(start, end)
+
+    def test_elfheader_has_rodata(self):
+        headers = peda.elfheader()
+        self.assertIn(".rodata", headers)
+        self.assertEqual(headers[".rodata"][2], "rodata")
+
+    def test_checksec_static_nopie(self):
+        cs = peda.checksec()
+        self.assertIsNotNone(cs)
+        self.assertEqual(set(cs), {"RELRO", "CANARY", "NX", "PIE", "FORTIFY"})
+        self.assertEqual(cs["NX"], 1)   # GNU_STACK is not RWE
+        self.assertEqual(cs["PIE"], 0)  # static -no-pie -> ET_EXEC
+
+    def test_getfile(self):
+        self.assertTrue(peda.getfile().endswith("test_static"))
+
+    def test_getpid_is_qemu_process(self):
+        # under qemu-user the inferior pid IS the host qemu pid
+        pid = peda.getpid()
+        self.assertIsInstance(pid, int)
+        self.assertGreater(pid, 0)
+
+    def test_elfsymbols_empty_for_static(self):
+        # static binary has no .dynstr -> no dynamic symbols to report
+        self.assertEqual(peda.elfsymbols(), {})
+
+
+class SnapshotTests(unittest.TestCase):
+    """take/give snapshot: registers + writable memory are restored."""
+
+    def setUp(self):
+        reset_cache()
+
+    def test_snapshot_roundtrip(self):
+        snap = peda.take_snapshot()
+        self.assertIsNotNone(snap)
+        self.assertIn("reg", snap)
+        self.assertIn("mem", snap)
+        self.assertTrue(snap["reg"])
+        self.assertTrue(snap["mem"])
+
+        scratch = (peda.getreg("sp") - 0x400) & ~0xF
+        saved_t0 = snap["reg"].get("t0", 0)
+        setreg("t0", (saved_t0 ^ 0xDEAD) or 1)
+        peda.writemem(scratch, b"MUTATED!")
+
+        self.assertTrue(peda.give_snapshot(snap))
+        self.assertEqual(peda.getreg("t0"), saved_t0)
+
+    def test_save_restore_snapshot_file(self):
+        fname = "snap_test_riscv.bin"  # gdb cwd is the temp workdir
+        self.assertTrue(peda.save_snapshot(fname))
+        scratch = (peda.getreg("sp") - 0x400) & ~0xF
+        peda.writemem(scratch, b"MUTATED!")
+        self.assertTrue(peda.restore_snapshot(fname))
+
+
+class StatusTests(unittest.TestCase):
+    """get_status() against the live remote target."""
+
+    def setUp(self):
+        reset_cache()
+
+    def test_status_at_breakpoint(self):
+        # break at the NEXT instruction (a tbreak at $pc itself would not
+        # re-trigger and the program would run to completion)
+        pc = peda.getreg("pc")
+        nxt = peda.next_inst(pc, 1)[0][0]
+        gdb.execute(f"tbreak *0x{nxt:x}")
+        gdb.execute("continue")
+        self.assertEqual(peda.get_status(), "BREAKPOINT")
+
+    def test_getpid_live(self):
+        self.assertIsNotNone(peda.getpid())
+
+
 # --------------------------------------------------------------------------
 # runner
 # --------------------------------------------------------------------------
@@ -476,10 +803,15 @@ class CallFlowTests(unittest.TestCase):
 def build_suite():
     loader = unittest.TestLoader()
     # CallFlowTests drive the live execution first: later tests freely
-    # clobber registers (a clobbered argc/argv would disturb the run)
+    # clobber registers (a clobbered argc/argv would disturb the run).
+    # SnapshotTests/StatusTests come last: they restore/advance the live
+    # state, which earlier assertions must not depend on.
     order = [CallFlowTests, ArchTests, ParseAndEvalTests,
              FunctionArgsHeuristicTests, DwarfArgsParserTests,
-             VmmapParserTests, VmmapBinaryTests, BranchSemanticsTests]
+             VmmapParserTests, VmmapBinaryTests, BranchSemanticsTests,
+             VmrangePermTests, SearchmemTests, MemAccessTests,
+             DisasmHelpersTests, StringToArgvTests, ElfInfoTests,
+             SnapshotTests, StatusTests]
     suite = unittest.TestSuite()
     for cls in order:
         suite.addTests(loader.loadTestsFromTestCase(cls))
