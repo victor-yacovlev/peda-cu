@@ -33,8 +33,8 @@ import sys
 import unittest
 
 import gdb
-
-from utils import to_int, reset_cache  # noqa: E402  (already on sys.path)
+from __main__ import peda  # provided by `source peda.py` before this file
+from utils import to_int, reset_cache  # already on sys.path
 
 
 # --------------------------------------------------------------------------
@@ -63,13 +63,13 @@ def patch_redirect(pedamod, pairs):
 
 
 def setreg(name, value):
-    gdb.execute("set $%s = %d" % (name, value))
+    gdb.execute(f"set ${name} = {value}")
 
 
 def setcpsr(n=False, z=False, c=False, v=False):
-    val = (0x80000000 if n else 0) | (0x40000000 if z else 0) \
-        | (0x20000000 if c else 0) | (0x10000000 if v else 0)
-    gdb.execute("set $cpsr = %d" % val)
+    val = ((0x80000000 if n else 0) | (0x40000000 if z else 0)
+           | (0x20000000 if c else 0) | (0x10000000 if v else 0))
+    gdb.execute(f"set $cpsr = {val}")
 
 
 # canned outputs -----------------------------------------------------------
@@ -106,7 +106,7 @@ class ArchTests(unittest.TestCase):
         names = peda.get_regnames()
         aa64 = names[64]
         for i in range(31):
-            self.assertIn("x%d" % i, aa64)
+            self.assertIn(f"x{i}", aa64)
         for r in ["sp", "pc"]:
             self.assertIn(r, aa64)
         # no x86 leftovers under an aarch64 target
@@ -158,7 +158,7 @@ class FunctionArgsHeuristicTests(unittest.TestCase):
 
     def test_heuristic_values_follow_registers(self):
         for i in range(6):
-            setreg("x%d" % i, 0x100 + i)
+            setreg(f"x{i}", 0x100 + i)
         args = peda._get_function_args_aarch64(CODE_SIX_ARGS, None)
         self.assertEqual(args, [0x100 + i for i in range(6)])
 
@@ -223,7 +223,7 @@ class BranchSemanticsTests(unittest.TestCase):
     def setUp(self):
         # known register/flag state for every test
         for i in range(8):
-            setreg("x%d" % i, 0)
+            setreg(f"x{i}", 0)
         setcpsr()
 
     def tj(self, inst):
@@ -355,7 +355,7 @@ class CallFlowTests(unittest.TestCase):
         m = re.search(r"0x([0-9a-f]+)\s+<[^>]*>:\s*\tb\.", out)
         assert m, "cannot locate the first conditional branch in main"
         cls.branch_addr = int(m.group(1), 16)
-        gdb.execute("tbreak *0x%x" % cls.bl_addr)
+        gdb.execute(f"tbreak *0x{cls.bl_addr:x}")
         gdb.execute("continue")  # -> stopped at the bl in main
 
     def test_01_args_at_call_site(self):
@@ -370,7 +370,7 @@ class CallFlowTests(unittest.TestCase):
         self.assertEqual(peda.get_function_args(), [1, 2, 3, 4, 5, 6])
 
     def test_03_branch_prediction_matches_execution(self):
-        gdb.execute("tbreak *0x%x" % self.branch_addr)
+        gdb.execute(f"tbreak *0x{self.branch_addr:x}")
         gdb.execute("continue")  # sum6 returns; stop at the branch (s = 21)
         inst = peda.execute_redirect("x/i $pc")
         predicted = peda.testjump(inst)
@@ -385,7 +385,7 @@ class CallFlowTests(unittest.TestCase):
     def test_04_branch_prediction_after_flag_flip(self):
         # rewind to the same branch and flip the Z flag: with either gcc
         # polarity (b.le or b.gt) the outcome flips; consistency is asserted
-        gdb.execute("set $pc = 0x%x" % self.branch_addr)
+        gdb.execute(f"set $pc = 0x{self.branch_addr:x}")
         setcpsr(z=True)
         inst = peda.execute_redirect("x/i $pc")
         predicted = peda.testjump(inst)

@@ -6,25 +6,25 @@
 #       License: see LICENSE file for details
 #
 
-import tempfile
-import pprint
-import inspect
-import sys
-import struct
-import string
-import re
-import functools
-import subprocess
 import codecs
+import functools
+import inspect
+import pprint
+import re
+import string
+import struct
+import subprocess
+import sys
+import tempfile
 from collections.abc import Callable, Iterator
 from io import StringIO
-from typing import IO, Any, Self
+from typing import Any, Self
 
 import config
 
 # http://wiki.python.org/moin/PythonDecoratorLibrary#Memoize
 # http://stackoverflow.com/questions/8856164/class-decorator-decorating-method-in-python
-class memoized(object):
+class memoized:
     """
     Decorator. Caches a function's return value each time it is called.
     If called later with the same arguments, the cached value is returned
@@ -145,20 +145,20 @@ def clearscreen() -> None:
     """Clear terminal screen"""
     sys.stdout.write("\x1b[2J\x1b[H")
 
-class message(object):
+class message:
     """
     Generic pretty printer with redirection.
     It also suports buffering using bufferize() and flush().
     """
 
     def __init__(self) -> None:
-        self.out = sys.stdout
+        self.out: StringIO | Any = sys.stdout
         self.buffering = 0
 
     def bufferize(self, f: Callable[..., Any] | None = None) -> Callable[..., Any] | None:
         """Activate message's bufferization, can also be used as a decorater."""
 
-        if f != None:
+        if f is not None:
             @functools.wraps(f)
             def wrapper(*args: Any, **kwargs: Any) -> None:
                 self.bufferize()
@@ -211,7 +211,7 @@ def error_msg(text: Any) -> None:
 
 def debug_msg(text: Any, prefix: str = "Debug") -> None:
     """Colorize debug message with prefix"""
-    msg(colorize("%s: %s" % (prefix, str(text)), "cyan"))
+    msg(colorize(f"{prefix}: {text!s}", "cyan"))
 
 def trim(docstring: str | None) -> str:
     """
@@ -260,12 +260,10 @@ def pager(text: str, pagesize: int | None = None) -> None:
     for line in lines:
         msg(line)
         if i % pagesize == 0:
-            ans = input("--More--(%d/%d)" % (i, l))
+            ans = input(f"--More--({i}/{l})")
             if ans.lower().strip() == "q":
                 break
         i += 1
-
-    return
 
 def execute_external_command(command: str, cmd_input: bytes | None = None) -> str:
     """
@@ -325,16 +323,15 @@ def to_hexstr(str_: str | bytes) -> str:
     """
     if isinstance(str_, str):
         str_ = str_.encode('latin-1')
-    return "".join(["\\x%02x" % ord(i) for i in bytes_iterator(str_)])
+    return "".join([f"\\x{ord(i):02x}" for i in bytes_iterator(str_)])
 
 def to_hex(num: int) -> str:
     """
     Convert a number to hex format
     """
     if num < 0:
-        return "-0x%x" % (-num)
-    else:
-        return "0x%x" % num
+        return f"-0x{-num:x}"
+    return f"0x{num:x}"
 
 def to_address(num: int) -> str:
     """
@@ -343,9 +340,8 @@ def to_address(num: int) -> str:
     if num < 0:
         return to_hex(num)
     if num > 0xffffffff: # 64 bit
-        return "0x%016x" % num
-    else:
-        return "0x%08x" % num
+        return f"0x{num:016x}"
+    return f"0x{num:08x}"
 
 def to_int(val: Any) -> int | None:
     """
@@ -353,7 +349,7 @@ def to_int(val: Any) -> int | None:
     """
     try:
         return int(str(val), 0)
-    except:
+    except (TypeError, ValueError):
         return None
 
 def str2hex(str: bytes) -> bytes:
@@ -369,7 +365,7 @@ def hex2str(hexnum: str | int, intsize: int = 4) -> bytes:
     """
     if not isinstance(hexnum, str):
         nbits = intsize * 8
-        hexnum = "0x%x" % ((hexnum + (1 << nbits)) % (1 << nbits))
+        hexnum = f"0x{(hexnum + (1 << nbits)) % (1 << nbits):x}"
     s = hexnum[2:]
     if len(s) % 2 != 0:
         s = "0" + s
@@ -468,19 +464,20 @@ def format_reference_chain(chain: list[tuple[str, str, str]] | None) -> str:
     else:
         first = True
         for (v, t, vn) in chain:
+            prefix = "" if first else "--> "
             if t != "value":
-                text += "%s%s " % ("--> " if not first else "", format_address(v, t))
+                text += f"{prefix}{format_address(v, t)} "
             else:
-                text += "%s%s " % ("--> " if not first else "", v)
+                text += f"{prefix}{v} "
             first = False
 
         if vn:
-            text += "(%s)" % vn
+            text += f"({vn})"
         else:
             if v != "0x0":
                 s = hex2str(v or "")
                 if is_printable(s, "\x00"):
-                    text += "(%s)" % string_repr(s.split(b"\x00")[0])
+                    text += f"({string_repr(s.split(b'\x00')[0])})"
     return text
 
 # vulnerable C functions, source: rats/flawfinder
@@ -530,9 +527,9 @@ def format_disasm_code(code: str, nearby: int | None = None) -> str:
                 result += line + "\n"
                 continue
             addr, opcode = to_int(m.group(1)), m.group(2)
-            for c in colorcodes:
+            for c, ccolor in colorcodes.items():
                 if c in opcode:
-                    color = colorcodes[c]
+                    color = ccolor
                     if c == "call":
                         for f in VULN_FUNCTIONS:
                             if f in line.split(":\t", 1)[-1]:
@@ -558,7 +555,7 @@ def format_disasm_code(code: str, nearby: int | None = None) -> str:
                 comment = colorize(";" + line.split(";", 1)[1], color, "dark")
             else:
                 comment = ""
-            line = "%s:%s%s" % (prefix, code, comment)
+            line = f"{prefix}:{code}{comment}"
             result += line + "\n"
 
     return result.rstrip()
@@ -595,7 +592,7 @@ def cyclic_pattern_charset(charset_type: int | str | None = None) -> str:
     mixed_charset = mixed = ''
     k = 0
     while True:
-        for i in range(0, len(charset)): mixed += charset[i][k:k+1]
+        for i in range(len(charset)): mixed += charset[i][k:k+1]
         if not mixed: break
         mixed_charset += mixed
         mixed = ''
@@ -744,13 +741,13 @@ def to_binary_string(text: bytes | str) -> bytes:
     elif isinstance(text, str):
         return text.encode('latin-1')
     else:
-        raise Exception('only takes string types')
+        raise TypeError("only takes string types")
 
 
 def dbg_print_vars(*args: Any) -> None:
     """Prints name and repr of each arg on a separate line"""
-    import inspect
-    parent_locals = inspect.currentframe().f_back.f_locals
+    frame = inspect.currentframe()
+    parent_locals = frame.f_back.f_locals if frame is not None and frame.f_back is not None else {}
     maps = []
     for arg in args:
         for name, value in parent_locals.items():

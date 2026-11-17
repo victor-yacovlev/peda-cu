@@ -10,7 +10,7 @@ from io import StringIO
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "lib"))
 
-from utils import message, memoized, to_int, to_hex  # noqa: E402
+from utils import message, memoized, to_int, to_hex  # sys.path set above
 
 
 class TestToInt(unittest.TestCase):

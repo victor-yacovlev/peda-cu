@@ -31,8 +31,8 @@ import sys
 import unittest
 
 import gdb
-
-from utils import to_int, reset_cache  # noqa: E402  (already on sys.path)
+from __main__ import peda  # provided by `source peda.py` before this file
+from utils import to_int, reset_cache  # already on sys.path
 
 
 # --------------------------------------------------------------------------
@@ -79,7 +79,7 @@ def patch_execute(pedamod, pairs):
 
 
 def setreg(name, value):
-    gdb.execute("set $%s = %d" % (name, value))
+    gdb.execute(f"set ${name} = {value}")
 
 
 # canned outputs -----------------------------------------------------------
@@ -257,9 +257,9 @@ class VmmapParserTests(unittest.TestCase):
     def test_local_proc_fallback(self):
         """Both remote sources fail -> local /proc/<qemu_pid>/maps is used."""
         reset_cache()
-        with patch_redirect(peda, {"info proc mappings": None}):
-            with patch_execute(peda, {"remote get": False}):
-                maps = peda.get_vmmap("all")
+        with patch_redirect(peda, {"info proc mappings": None}), \
+                patch_execute(peda, {"remote get": False}):
+            maps = peda.get_vmmap("all")
         # the inferior pid IS the local qemu process: its host maps are read
         self.assertGreater(len(maps), 3)
         for (start, end, perm, name) in maps:
@@ -427,7 +427,7 @@ class CallFlowTests(unittest.TestCase):
         m = re.search(r"0x([0-9a-f]+)\s+<[^>]*>:\s*\t(b\w*)\s", out)
         assert m, "cannot locate the first branch in main"
         cls.branch_addr = int(m.group(1), 16)
-        gdb.execute("tbreak *0x%x" % cls.jal_addr)
+        gdb.execute(f"tbreak *0x{cls.jal_addr:x}")
         gdb.execute("continue")  # -> stopped at the jal in main
 
     def test_01_args_at_call_site(self):
@@ -441,7 +441,7 @@ class CallFlowTests(unittest.TestCase):
         self.assertEqual(peda.get_function_args(), [1, 2, 3, 4, 5, 6])
 
     def test_03_branch_prediction_matches_execution(self):
-        gdb.execute("tbreak *0x%x" % self.branch_addr)
+        gdb.execute(f"tbreak *0x{self.branch_addr:x}")
         gdb.execute("continue")  # sum6 returns; stop at the branch (s = 21)
         inst = peda.execute_redirect("x/i $pc")
         predicted = peda.testjump(inst)
@@ -456,7 +456,7 @@ class CallFlowTests(unittest.TestCase):
     def test_04_branch_prediction_after_flip(self):
         # rewind to the same branch, make s small (a4 = 5): with either
         # gcc polarity the outcome flips; consistency is what we assert
-        gdb.execute("set $pc = 0x%x" % self.branch_addr)
+        gdb.execute(f"set $pc = 0x{self.branch_addr:x}")
         setreg("a4", 5)
         inst = peda.execute_redirect("x/i $pc")
         predicted = peda.testjump(inst)

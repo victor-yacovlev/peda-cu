@@ -41,16 +41,12 @@ OPTIONS: dict[str, tuple[str | int, str]] = {
 
 ## END OF SETTINGS ##
 
-class Option(object):
+class Option:
     """
     Class to access global options of PEDA commands and functions
     TODO: save/load option to/from file
     """
     options: dict[str, tuple[str | int, str]] = OPTIONS.copy()
-    def __init__(self) -> None:
-        """option format: name = (value, 'help message')"""
-        pass
-
 
     @staticmethod
     def reset() -> bool:
@@ -72,8 +68,7 @@ class Option(object):
         """get option"""
         if name in Option.options:
             return Option.options[name][0]
-        else:
-            return None
+        return None
 
     @staticmethod
     def set(name: str, value: Any) -> bool:
@@ -81,8 +76,7 @@ class Option(object):
         if name in Option.options:
             Option.options[name] = (value, Option.options[name][1])
             return True
-        else:
-            return False
+        return False
 
     @staticmethod
     def help(name: str = "") -> dict[str, str]:
