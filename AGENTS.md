@@ -17,10 +17,10 @@
 - [docs/agents/environment-and-testing.md](docs/agents/environment-and-testing.md) - окружение, стенд, тестовый набор
 - [docs/agents/pitfalls.md](docs/agents/pitfalls.md) - проверенные на практике грабли QEMU × GDB × gcc
 
-## Контекст про RISC-V
+## Контекст про RISC-V и AArch64
 
 Большинство студентов используют Linux. 
 
-В качетстве компилятора используется `riscv64-linux-gnu-gcc`, для запуска программ - QEMU-user.
+В качетстве компилятора используется `riscv64-linux-gnu-gcc` или `aarch64-linux-gnu-gcc`, для запуска программ - QEMU-user.
 
-Студенты запускают `qemu-riscv64` с опцией `-g PORT`, а затем подключаются к нему из `gdb` с помощью `target remote PORT`
+Студенты запускают `qemu-riscv64`/`qemu-aarch64` с опцией `-g PORT`, а затем подключаются к нему из `gdb` с помощью `target remote PORT`

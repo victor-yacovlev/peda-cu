@@ -53,6 +53,14 @@ REGISTERS: dict[str, dict[int, list[str]]] = {
              "s0", "fp", "s1", "a0", "a1", "a2", "a3", "a4", "a5",
              "a6", "a7", "s2", "s3", "s4", "s5", "s6", "s7", "s8",
              "s9", "s10", "s11", "t3", "t4", "t5", "t6", "pc"]
+    },
+    # AArch64 general-purpose names as printed by GDB "info registers"
+    # (x29 = frame pointer, x30 = link register)
+    "aarch64": {
+        64: ["x0", "x1", "x2", "x3", "x4", "x5", "x6", "x7", "x8",
+             "x9", "x10", "x11", "x12", "x13", "x14", "x15", "x16",
+             "x17", "x18", "x19", "x20", "x21", "x22", "x23", "x24",
+             "x25", "x26", "x27", "x28", "x29", "x30", "sp", "pc"]
     }
 }
 
@@ -472,12 +480,19 @@ class PEDA(object):
         arch, _ = self.getarch()
         return "riscv" in arch
 
+    def _is_aarch64(self) -> bool:
+        """True if the debugged program is AArch64 (e.g. elf64-littleaarch64)"""
+        arch, _ = self.getarch()
+        return "aarch64" in arch
+
     def get_regnames(self) -> dict[int, list[str]]:
         """
         Register name table of the debugged architecture, {bits: [names]}
         """
         if self._is_riscv():
             return REGISTERS["riscv"]
+        if self._is_aarch64():
+            return REGISTERS["aarch64"]
         return REGISTERS["x86"]
 
     def intsize(self) -> int:
@@ -1083,6 +1098,66 @@ class PEDA(object):
 
         return args
 
+    def _get_function_args_aarch64(self, code: str, argc: int | None = None) -> list[int]:
+        """
+        Guess the number of arguments passed to a function - AArch64 (x0-x7)
+        """
+        # just retrieve max 8 args
+        arg_order = ["x0", "x1", "x2", "x3", "x4", "x5", "x6", "x7"]
+        # instructions whose first operand is the written register;
+        # stores (str/stp...) are excluded: their first operand is a source
+        writers = {"mov", "movz", "movn", "movk", "mvn",
+                   "ldr", "ldur", "ldp", "ldrb", "ldrh", "ldrsb", "ldrsh",
+                   "ldrsw", "ldurb", "ldurh", "ldursb", "ldursh", "ldursw",
+                   "add", "sub", "subs", "adds", "neg", "mul", "madd",
+                   "msub", "smull", "umull", "and", "ands", "orr", "eor",
+                   "eon", "bic", "lsl", "lsr", "asr", "ror", "sxtw",
+                   "sxtb", "sxth", "uxtw", "uxtb", "uxth", "csel", "csinc",
+                   "cinc", "cinv", "cset", "csetm"}
+
+        def normalize_reg(name: str) -> str:
+            # 32-bit view names (w0-w30) appear for int arguments:
+            # normalize to the 64-bit name used in arg_order
+            m = re.match(r"^w(\d+)$", name)
+            return "x%s" % m.group(1) if m else name
+
+        if argc is None:
+            argc = 0
+            written = set()
+            for line in code.splitlines():
+                # line format: "0x<addr> [<sym>]:<mnemonic><TAB><operands>"
+                m = re.search(r"0x[0-9a-f]+[^:]*:\s*(\S+)\s*(.*)", line)
+                if not m:
+                    continue
+                (mnemonic, operands) = m.groups()
+                if mnemonic not in writers:
+                    continue
+                # strip objdump-style trailing comment: "mov w5, #0x6 // #6"
+                operands = re.sub(r"\s*//.*$", "", operands)
+                dst = normalize_reg(operands.split(",")[0].strip())
+                if dst in arg_order:
+                    written.add(dst)
+            # calling convention sets x0..xN contiguously: argc = highest index + 1
+            for (i, r) in enumerate(arg_order):
+                if r in written:
+                    argc = i + 1
+
+        argc = min(argc, 8)
+        if argc == 0:
+            return []
+
+        args = []
+        regs = self.getregs()
+        if regs is None:
+            return []
+        for i in range(argc):
+            r = arg_order[i]
+            if r not in regs:
+                break
+            args += [regs[r]]
+
+        return args
+
     def _get_function_args_dwarf(self) -> list[int] | None:
         """
         Get the arguments of the current function from debug info ("info args").
@@ -1124,16 +1199,27 @@ class PEDA(object):
         (arch, bits) = self.getarch()
         pc = self.getreg("pc")
 
-        # RISC-V, stopped at function entry (not at a call instruction):
-        # the gcc -O0 prologue rotates/spills a0-a5 to stack ("mv a6,a0;",
-        # "mv a0,a1;", ..., "sw a5,-N(s0)"), so current register values are
-        # shuffled. Prefer DWARF info (programs in the course are built -g),
+        # arch-specific call opcodes (exact mnemonic match), x86 keeps its
+        # substring "call" check below
+        if "riscv" in arch:
+            arch_call_ops = ("jal", "jalr", "tail", "c.jal", "c.jalr", "c.tail")
+        elif "aarch64" in arch:
+            arch_call_ops = ("bl", "blr")
+        else:
+            arch_call_ops = ()
+
+        # Stopped at function entry (not at a call instruction):
+        # - RISC-V: the gcc -O0 prologue rotates/spills a0-a5 to stack
+        #   ("mv a6,a0;", "mv a0,a1;", ..., "sw a5,-N(s0)"), so current register
+        #   values are shuffled;
+        # - AArch64: registers x0-x7 still hold the values, but the setup code
+        #   cannot be scanned back past the call itself, so argc is unknown.
+        # In both cases prefer DWARF info (programs in the course are built -g),
         # and keep the register heuristic for the no-debug-info case.
-        if "riscv" in arch and argc is None:
+        if arch_call_ops and argc is None:
             out = self.execute_redirect("x/i 0x%x" % pc)
             opcode = out.split(":\t")[-1].split()[0] if out else ""
-            if opcode and "call" not in opcode and opcode not in ("jal", "jalr",
-                    "tail", "c.jal", "c.jalr", "c.tail"):
+            if opcode and "call" not in opcode and opcode not in arch_call_ops:
                 dw_args = self._get_function_args_dwarf()
                 if dw_args is not None:
                     return dw_args
@@ -1144,10 +1230,9 @@ class PEDA(object):
         if not prev_insts:
             return []
 
-        call_ops = ("call", "jal", "jalr", "tail", "c.jal", "c.jalr", "c.tail")
         for (addr, inst) in prev_insts[::-1]:
             opcode = inst.strip().split()[0]
-            if "call" in opcode or (self._is_riscv() and opcode in call_ops):
+            if "call" in opcode or opcode in arch_call_ops:
                 break
             code = "0x%x:%s\n" % (addr, inst) + code
 
@@ -1155,6 +1240,8 @@ class PEDA(object):
             args = self._get_function_args_32(code, argc)
         elif "riscv" in arch:
             args = self._get_function_args_riscv(code, argc)
+        elif "aarch64" in arch:
+            args = self._get_function_args_aarch64(code, argc)
         elif "64" in arch:
             args = self._get_function_args_64(code, argc)
 
@@ -1346,6 +1433,38 @@ class PEDA(object):
         target = None
         inst = inst.strip()
 
+        if self._is_aarch64():
+            # e.g. "=> 0x4007a8 <main+56>:\tb.le\t0x4007bc <main+76>"
+            # (binutils separates mnemonic and operands with a TAB on aarch64,
+            # same as on riscv; "ret" has no operands at all)
+            m = re.search(r":\s*(\S+)\s*(.*)", inst)
+            if not m:
+                return None
+            (mnemonic, operands) = m.groups()
+            # strip objdump-style trailing comment: "mov w5, #0x6 // #6"
+            operands = re.sub(r"\s*//.*$", "", operands)
+            parts = [p.strip() for p in operands.split(",")]
+            if mnemonic in ("br", "blr") and parts and parts[0]:
+                # target is the register: "br x0" / "blr x1"
+                return self.getreg(parts[0].lstrip("$"))
+            if mnemonic == "ret":
+                # "ret" returns to x30 (lr); explicit "ret xN" is rare
+                if parts and parts[0]:
+                    return self.getreg(parts[0].lstrip("$"))
+                return self.getreg("x30")
+            # otherwise the last operand is the target; strip "<symbol>"
+            # annotation (branch offsets may print as bare hex, cf. riscv)
+            if not parts or not parts[-1]:
+                return None
+            target = parts[-1].split()[0]
+            value = to_int(target)
+            if value is None:
+                try:
+                    value = int(target, 16)
+                except ValueError:
+                    value = self.parse_and_eval(target)
+            return to_int(value)
+
         if self._is_riscv():
             # e.g. "=> 0x104cc <main+36>:\tbgt\ta5,a4,104ee <sum6>"
             # (binutils separates mnemonic and operands with a TAB on riscv)
@@ -1390,6 +1509,91 @@ class PEDA(object):
             target = self.parse_and_eval("%s[%s]" % (m.group(1), m.group(2).strip()))
 
         return to_int(target)
+
+    def _testjump_aarch64(self, inst: str) -> int | None:
+        """
+        Test if an AArch64 jump/branch instruction is taken: conditional
+        branches test the N/Z/C/V flags of CPSR (already set by the preceding
+        cmp/tst instruction), cbz/cbnz/tbz/tbnz test a register directly.
+
+        Args:
+            - inst: ASM instruction text (String)
+
+        Returns:
+            - target address if the branch is taken, None otherwise
+        """
+        uncond = {"b", "bl", "br", "blr", "ret"}
+        # condition code -> predicate over CPSR flags (N=31, Z=30, C=29, V=28)
+        cond = {
+            "eq": lambda n, z, c, v: z,
+            "ne": lambda n, z, c, v: not z,
+            "cs": lambda n, z, c, v: c,   "hs": lambda n, z, c, v: c,
+            "cc": lambda n, z, c, v: not c, "lo": lambda n, z, c, v: not c,
+            "mi": lambda n, z, c, v: n,
+            "pl": lambda n, z, c, v: not n,
+            "vs": lambda n, z, c, v: v,
+            "vc": lambda n, z, c, v: not v,
+            "hi": lambda n, z, c, v: c and not z,
+            "ls": lambda n, z, c, v: (not c) or z,
+            "ge": lambda n, z, c, v: n == v,
+            "lt": lambda n, z, c, v: n != v,
+            "gt": lambda n, z, c, v: (not z) and (n == v),
+            "le": lambda n, z, c, v: z or (n != v),
+            "al": lambda n, z, c, v: True,
+            "nv": lambda n, z, c, v: True,  # behaves as al in armv8
+        }
+
+        m = re.search(r":\s*(\S+)\s*(.*)", inst.strip())
+        if not m:
+            return None
+        (opcode, operands) = m.groups()
+        parts = [p.strip() for p in operands.split(",")]
+        next_addr = self.eval_target(inst)
+
+        def regvalue(name: str) -> int | None:
+            # getreg accepts both 64-bit (xN) and 32-bit (wN) view names:
+            # the width must match the instruction operand
+            return self.getreg(name) if name else None
+
+        if opcode in uncond:
+            return next_addr if next_addr else 0
+
+        if opcode in ("cbz", "cbnz"):
+            if not parts:
+                return None
+            v = regvalue(parts[0])
+            if v is None:
+                return None
+            taken = (v == 0) if opcode == "cbz" else (v != 0)
+            return next_addr if taken else None
+
+        if opcode in ("tbz", "tbnz"):
+            # tbz x0, #3, target: test bit 3 of x0
+            if len(parts) < 2:
+                return None
+            v = regvalue(parts[0])
+            bit = to_int(parts[1].lstrip("#"))
+            if v is None or bit is None:
+                return None
+            taken = bool((v >> bit) & 1)
+            if opcode == "tbz":
+                taken = not taken
+            return next_addr if taken else None
+
+        if opcode.startswith("b."):
+            cc = opcode[2:]
+            if cc not in cond:
+                return None
+            cpsr = self.getreg("cpsr")
+            if cpsr is None:
+                return None
+            n = bool(cpsr & (1 << 31))
+            z = bool(cpsr & (1 << 30))
+            c = bool(cpsr & (1 << 29))
+            v = bool(cpsr & (1 << 28))
+            return next_addr if cond[cc](n, z, c, v) else None
+
+        return None
 
     def _testjump_riscv(self, inst: str) -> int | None:
         """
@@ -1476,6 +1680,9 @@ class PEDA(object):
             inst = self.execute_redirect("x/i 0x%x" % pc)
             if not inst:
                 return None
+
+        if self._is_aarch64():
+            return self._testjump_aarch64(inst)
 
         if self._is_riscv():
             return self._testjump_riscv(inst)
@@ -4599,6 +4806,13 @@ class PEDACmd(object):
                 is_call = opcode in ("call", "jal", "jalr", "c.jal", "c.jalr")
                 is_jump = (opcode[0] == "b" or opcode.startswith("c.b")
                            or opcode in ("j", "jr", "c.j", "c.jr"))
+            elif peda._is_aarch64():
+                # AArch64: calls bl/blr; branches b / b.cond / cbz / cbnz /
+                # tbz / tbnz / br / ret (exact names: "bic" is not a branch)
+                is_call = opcode in ("bl", "blr")
+                is_jump = (opcode == "b" or opcode.startswith("b.")
+                           or opcode in ("br", "ret", "cbz", "cbnz",
+                                         "tbz", "tbnz"))
             else:
                 # stopped at function call
                 is_call = "call" in opcode

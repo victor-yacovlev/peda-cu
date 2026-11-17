@@ -44,20 +44,29 @@ Requires GDB built with Python 3 (>= 3.13). Python 2 is not supported.
   PORT` (`target remote :PORT`), including `vmmap`, `dumpargs` (RISC-V ABI,
   a0-a7), branch-taken hints in `context` and register display. x86 remains
   the primary target.
+* AArch64 targets are supported the same way: `gdb-multiarch` +
+  `qemu-aarch64 -g PORT` (`target remote :PORT`), including `vmmap`,
+  `dumpargs` (AArch64 ABI, x0-x7), branch-taken hints in `context` (`b.cond`
+  via CPSR flags, `cbz`/`cbnz`, `tbz`/`tbnz`) and register display.
 
 ## Tests
 
 Run before committing (Linux host):
 
-    tests/run_unit_tests.sh   # unit tests: lib/utils.py + gdb-embedded suite
-                              # against a live qemu-riscv64 target (67 tests)
+    tests/run_unit_tests.sh   # unit tests: lib/utils.py + gdb-embedded suites
+                              # against live qemu-riscv64 (52 tests) and
+                              # qemu-aarch64 (45 tests) targets
     tests/smoke_riscv.sh      # command-level smoke test under qemu (13 checks)
+    tests/smoke_aarch64.sh    # command-level smoke test under qemu (13 checks)
     tests/smoke_x86.sh        # x86-64 regression (10 checks)
 
-The unit suite covers vmmap parsers (modern/legacy `info proc mappings`,
+The unit suites cover vmmap parsers (modern/legacy `info proc mappings`,
 local /proc fallback), word-boundary register substitution, RISC-V argument
 heuristics + DWARF fallback, and branch semantics including the signed vs
-unsigned (`blt`/`bltu`) boundary.
+unsigned (`blt`/`bltu`) boundary; the AArch64 suite covers the x0-x7 argument
+heuristics (with w-register name normalization), `b.cond` evaluation via
+synthetic CPSR flags, register-width-correct `cbz`/`tbz` and the
+DWARF fallback at function entry.
 
 ## Screenshot
 ![start](http://i.imgur.com/P1BF5mp.png)

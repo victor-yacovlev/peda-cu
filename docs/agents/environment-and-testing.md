@@ -7,6 +7,8 @@
 | Debian / другой x86-64 Linux | Debian 13 (trixie) | |
 | `riscv64-linux-gnu-gcc` | 14.2.0 | `sudo apt install gcc-riscv64-linux-gnu` |
 | `qemu-riscv64` | 10.0.13 | `sudo apt install qemu-user`; важна пара GDB×QEMU для `info proc mappings` (см. pitfalls) |
+| `aarch64-linux-gnu-gcc` | 14.2.0 | `sudo apt install gcc-aarch64-linux-gnu`; для этапа 3 unit-тестов |
+| `qemu-aarch64` | 10.x | из `qemu-user`; этап 3 пропускается без него (graceful skip) |
 | `gdb-multiarch` | 16.3 | `sudo apt install gdb-multiarch` |
 | `readelf`/`objdump` | binutils | пути зашиты в `lib/config.py` |
 | `python3` | 3.13 | для standalone-тестов |
@@ -21,6 +23,10 @@
 riscv64-linux-gnu-gcc -static -no-pie -g -O0 tests/assets/test.c -o test_static
 riscv64-linux-gnu-gcc -static -pie  -g -O0 tests/assets/test.c -o test_pie
 riscv64-linux-gnu-gcc           -g -O0 tests/assets/test.c -o test_dyn
+
+aarch64-linux-gnu-gcc -static -no-pie -g -O0 tests/assets/test.c -o test_static
+aarch64-linux-gnu-gcc -static -pie  -g -O0 tests/assets/test.c -o test_pie
+aarch64-linux-gnu-gcc           -g -O0 tests/assets/test.c -o test_dyn
 ```
 
 Запуск под отладчиком (студенческий сценарий):
@@ -40,8 +46,9 @@ gdb-multiarch -q ./test_static \
 
 | Скрипт | Что делает | Объём |
 |---|---|---|
-| `tests/run_unit_tests.sh` | (1) standalone-тесты `lib/utils.py` обычным python3; (2) `tests/test_peda_gdb.py` — unittest внутри `gdb-multiarch -batch` под живым qemu-таргетом | 15 + 52 теста |
+| `tests/run_unit_tests.sh` | (1) standalone-тесты `lib/utils.py` обычным python3; (2) `tests/test_peda_gdb.py` — unittest внутри `gdb-multiarch -batch` под живым qemu-riscv64-таргетом; (3) `tests/test_peda_gdb_aarch64.py` — то же под qemu-aarch64 (graceful skip без тулчейна) | 15 + 52 + 45 тестов |
 | `tests/smoke_riscv.sh` | командный уровень: vmmap/context/eflags/dumpargs/searchmem/checksec/JUMP-аннотация | 13 проверок |
+| `tests/smoke_aarch64.sh` | то же для AArch64 (x-регистры, dumpargs x0-x7, b.cond-аннотация) | 13 проверок |
 | `tests/smoke_x86.sh` | x86-64 регресс: start/context/EFLAGS/intel-flavor/vmmap/dumpargs/checksec/pattern | 10 проверок |
 | `tests/regex_audit.py`, `tests/regex_functional.py` | аудит конверсии regex в r-строки | — |
 
